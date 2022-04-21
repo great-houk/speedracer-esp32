@@ -1,0 +1,25 @@
+[package]
+name = "speedracer-esp32"
+version = "0.1.0"
+authors = ["Tyler"]
+edition = "2018"
+resolver = "2"
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true # Symbols are nice and they don't increase the size on Flash
+opt-level = "z"
+
+[features]
+pio = ["esp-idf-sys/pio"]
+
+[dependencies]
+esp-idf-hal = "0.36.0"
+esp-idf-sys = { version = "0.31", features = ["binstart"] }
+anyhow = "1"
+
+[build-dependencies]
+embuild = "0.28"
+anyhow = "1"
