@@ -7,6 +7,11 @@
             "label": "Run ESP32 Windows",
             "type": "shell",
             "command": "espflash COM5 target/xtensa-esp32-espidf/debug/speedracer-esp32 --monitor"
+        },
+        {
+            "label": "Build ESP32 Linux",
+            "type": "shell",
+            "command": "export LIBCLANG_PATH=/home/tyler-r/.espressif/tools/xtensa-esp32-elf-clang/esp-13.0.0-20211203-x86_64-unknown-linux-gnu/lib; cargo b; read port; espflash $port target/xtensa-esp32-espidf/debug/speedracer-esp32 --monitor"
         }
     ]
 }
