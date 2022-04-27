@@ -6,6 +6,8 @@ use embedded_hal::prelude::*;
 use embedded_hal::serial::Read;
 use embedded_hal::serial::Write;
 use nb::{block, Error};
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum OutputFormat {
     CM,
     MM,
@@ -22,6 +24,7 @@ pub enum TFMPError {
     SerialError(SerialError),
     NotInTriggerMode,
     OutputDisabled,
+    WrongMethod,
 }
 
 impl From<SerialError> for TFMPError {
@@ -47,11 +50,11 @@ impl Command {
         match self {
             Command::GetFirmwareVersion => vec![0x5A, 0x04, 0x01, 0x5F],
             Command::SystemReset => vec![0x5A, 0x04, 0x02, 0x60],
-            Command::FrameRate(FrameRate) => {
+            Command::FrameRate(frame_rate) => {
                 let mut output = vec![0x5A, 0x06, 0x03];
-                output.extend_from_slice(&FrameRate.to_le_bytes());
-                let sum = output.iter().sum::<u8>();
-                output.push(sum);
+                output.extend_from_slice(&frame_rate.to_le_bytes());
+                let checksum = checksum(&output);
+                output.push(checksum);
                 output
             },
             Command::TriggerDetection => vec![0x5A, 0x04, 0x04, 0x62],
@@ -67,8 +70,8 @@ impl Command {
             Command::BaudRate(rate) => {
                 let mut output = vec![0x5A, 0x08, 0x06];
                 output.extend_from_slice(&rate.to_le_bytes());
-                let sum = output.iter().sum::<u8>();
-                output.push(sum);
+                let checksum = checksum(&output);
+                output.push(checksum);
                 output
             },
             Command::EnableOutput(enabled) => vec![0x5A, 0x05, 0x07, if *enabled { 1 } else { 0 }, 0x67],
@@ -127,7 +130,7 @@ impl Command {
             }
         }
         // Check checksum
-        let sum: u8 = response[0..8].iter().sum();
+        let sum = checksum(&response[0..8]);
         if sum != response[8] {
             return Err(TFMPError::BadChecksum(response));
         }
@@ -186,7 +189,7 @@ impl Command {
             return Err(TFMPError::WrongResponse(response));
         }
         // Check checksum
-        let sum: u8 = response[..response.len() - 1].iter().sum();
+        let sum = checksum(&response[..response.len() - 1]);
         if sum != response[response.len() - 1] {
             return Err(TFMPError::BadChecksum(response));
         }
@@ -202,7 +205,7 @@ impl Command {
                 _ => unreachable!(),
             })),
             Command::BaudRate(_) => Ok(Response::BaudRate(u32::from_le_bytes([response[3], response[4], response[6], response[6]]))),
-            Command::EnableOutput(_) => Ok(Response::OutputEnabled(if response[3] == 0 { true } else { false })),
+            Command::EnableOutput(_) => Ok(Response::OutputEnabled(if response[3] == 0 { false } else { true })),
             Command::SystemReset | Command::ResetFactorySettings | Command::SaveSettings => if response[3] == 0 { Ok(Response::None) } else { Err(TFMPError::CommandFailed)},
         }
     }
@@ -249,6 +252,9 @@ impl<UART: Uart> TFMP<UART> {
     /// Returns seperated data from sensor in format:
     /// (Distance 0-1200, Strength 0-65535, Temp in Celsius)
     pub fn read(&mut self) -> Result<(u16, u16, f32, Vec<u8>), TFMPError> {
+        if self.output_format == OutputFormat::Pixhawk {
+            return Err(TFMPError::WrongMethod);
+        }
         // Check if we can expect a frame
         if self.output_enabled == false {
             return Err(TFMPError::OutputDisabled);
@@ -274,6 +280,34 @@ impl<UART: Uart> TFMP<UART> {
         }
         // Read data
         self.read_data_frame(buf)
+    }
+
+    /// Reads the output of the sensor, if the format is in pixhawk.
+    /// The formating is so different, that this deserves a new function
+    pub fn read_pixhawk(&mut self) -> Result<String, TFMPError> {
+        if self.output_format != OutputFormat::Pixhawk {
+            return Err(TFMPError::WrongMethod);
+        }
+        // Check if we can expect a frame
+        if self.output_enabled == false {
+            return Err(TFMPError::OutputDisabled);
+        }
+        // Create buffer to store upcoming frame
+        let mut buf = Vec::new();
+        // Sanity check
+        let mut i = 0;
+        // Read until we find 13, 10, which are \r\n for this thing
+        while buf.len() < 2 || &buf[buf.len() - 2..] != &['\r' as u8, '\n' as u8] {
+            let byte = self.read_byte()?;
+            buf.push(byte);
+            // Just in case...
+            if i > 100 {
+                return Err(TFMPError::BadData);
+            }
+            i += 1;
+        }
+        // Return output
+        Ok(std::str::from_utf8(&buf).unwrap().to_string())
     }
 
     /// Returns the firmware version of the sensor, in the format (V3, V2, V1) for V3.V2.V1
@@ -326,10 +360,11 @@ impl<UART: Uart> TFMP<UART> {
         }
     }
 
-    /// Sets the output format of the sensor. Can be: CM, Pixart (Decimal String in CM), MM
-    pub fn set_output(&mut self, output: OutputFormat) -> Result<OutputFormat, TFMPError> {
+    /// Sets the output format of the sensor. Can be: CM, Pixart (Decimal String in M), MM
+    pub fn set_output_format(&mut self, output: OutputFormat) -> Result<OutputFormat, TFMPError> {
         if let Response::OutputFormat(format) = self.send_command(Command::OutputFormat(output))? {
             self.save_changes()?;
+            self.output_format = format.clone();
             Ok(format)
         } else {
             unreachable!()
@@ -372,8 +407,13 @@ impl<UART: Uart> TFMP<UART> {
     }
 
     fn save_changes(&mut self) -> Result<Response, TFMPError> {
-        println!("Saving...");
-        self.send_command(Command::SaveSettings)
+        let response = self.send_command(Command::SaveSettings);
+        // Weird behaviour where the save command won't return anything
+        response
+        // match response {
+        //     Err(TFMPError::NoResponse) => Ok(Response::None),
+        //     _ => response
+        // }
     }
 
     fn send_command(&mut self, command: Command) -> Result<Response, TFMPError> {
@@ -382,7 +422,6 @@ impl<UART: Uart> TFMP<UART> {
         // Flush the read buffer
         self.flush_read_buffer()?;
         // Send the actual data
-        println!("Writing Bytes: {data:?}");
         for byte in data {
             block!(self.tx.write(byte))?;
         }
@@ -390,7 +429,7 @@ impl<UART: Uart> TFMP<UART> {
         // Check what the response was
         let result = command.get_response(&mut self.rx);
         // Pause for a bit
-        FreeRtos.delay_ms(10u32);
+        FreeRtos.delay_ms(1u32);
         result
     }
 
@@ -403,7 +442,7 @@ impl<UART: Uart> TFMP<UART> {
 
     fn read_data_frame(&mut self, buf: Vec<u8>) -> Result<(u16, u16, f32, Vec<u8>), TFMPError>  {
         // Check checksum
-        let checksum: u8 = buf[..8].iter().fold(0, |acc, x| acc.wrapping_add(*x));
+        let checksum = checksum(&buf[..8]);
         if checksum != buf[8] {
             return Err(TFMPError::BadChecksum(buf))
         }
@@ -422,7 +461,7 @@ impl<UART: Uart> TFMP<UART> {
         Ok((dist, strength, temp, buf))
     }
 
-    fn read_byte(&mut self) -> Result<u8, TFMPError> {
+    pub fn read_byte(&mut self) -> Result<u8, TFMPError> {
         let byte = {
             let mut i = 1;
             loop {
@@ -440,4 +479,8 @@ impl<UART: Uart> TFMP<UART> {
         };
         Ok(byte)
     }
+}
+
+fn checksum(buf: &[u8]) -> u8 {
+    buf.iter().fold(0, |acc, x| acc.wrapping_add(*x))
 }
