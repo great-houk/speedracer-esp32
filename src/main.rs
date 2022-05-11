@@ -31,11 +31,11 @@ fn main() {
 
     let (a, b, c) = tfmp.get_firmware_version().unwrap();
     println!("Firmware: {a}.{b}.{c}");
-    tfmp.change_framerate(30).unwrap();
-    tfmp.set_output_format(OutputFormat::Pixhawk).unwrap();
+    tfmp.trigger().unwrap();
+    tfmp.set_output_format(OutputFormat::MM).unwrap();
 
     loop {
-        let data = tfmp.read_pixhawk();
+        let data = tfmp.trigger();
         println!("Pixhawk: {data:?}");
     }
 }
