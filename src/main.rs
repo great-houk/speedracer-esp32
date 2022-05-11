@@ -19,8 +19,8 @@ fn main() {
     let sensor_serial: serial::Serial<serial::UART1, _, _> = serial::Serial::new(
         peripherals.uart1,
         serial::Pins {
-            tx: pins.gpio19, // White
-            rx: pins.gpio18, // Green
+            tx: pins.gpio25, // White
+            rx: pins.gpio26, // Green
             cts: None,
             rts: None,
         },
@@ -31,11 +31,15 @@ fn main() {
 
     let (a, b, c) = tfmp.get_firmware_version().unwrap();
     println!("Firmware: {a}.{b}.{c}");
-    tfmp.trigger().unwrap();
+    tfmp.into_trigger_mode().unwrap();
     tfmp.set_output_format(OutputFormat::MM).unwrap();
 
     loop {
-        let data = tfmp.trigger();
-        println!("Pixhawk: {data:?}");
+        let result = tfmp.read();
+        if let Ok((dist, strength, temp, _)) = result {
+            println!("Data: {dist}, {strength}, {temp}")
+        } else {
+            println!("Error: {result:?}")
+        }
     }
 }
