@@ -1,6 +1,6 @@
 use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
 use esp_idf_hal::prelude::*;
-use esp_idf_hal::serial;
+use esp_idf_hal::{serial, serial::Uart};
 
 use crate::tfmini_plus::OutputFormat;
 
@@ -16,30 +16,40 @@ fn main() {
 
     let config = serial::config::Config::default().baudrate(Hertz(115_200));
 
-    let sensor_serial: serial::Serial<serial::UART1, _, _> = serial::Serial::new(
-        peripherals.uart1,
-        serial::Pins {
-            tx: pins.gpio25, // White
-            rx: pins.gpio26, // Green
-            cts: None,
-            rts: None,
-        },
-        config
-    ).unwrap();
+    let sensor_pins = [(pins.gpio18, pins.gpio5), (pins.gpio34, pins.gpio32)];
 
-    let mut tfmp = tfmini_plus::TFMP::new(sensor_serial).unwrap();
+    let mut tfmps = vec![];
 
-    let (a, b, c) = tfmp.get_firmware_version().unwrap();
-    println!("Firmware: {a}.{b}.{c}");
-    tfmp.into_trigger_mode().unwrap();
-    tfmp.set_output_format(OutputFormat::MM).unwrap();
+    for (white, green) in sensor_pins {
+        let sensor_serial: serial::Serial<serial::UART1, _, _> = serial::Serial::new(
+            peripherals.uart1,
+            serial::Pins {
+                tx: white,
+                rx: green,
+                cts: None,
+                rts: None,
+            },
+            config
+        ).unwrap();
+        let tfmp = tfmini_plus::TFMP::new(sensor_serial).unwrap();
+
+        tfmps.push(tfmp);
+    }
 
     loop {
-        let result = tfmp.read();
+        let result = tfmps[0].trigger();
         if let Ok((dist, strength, temp, _)) = result {
             println!("Data: {dist}, {strength}, {temp}")
         } else {
             println!("Error: {result:?}")
         }
     }
+}
+
+fn init_tfmp<UART: Uart>(tfmp: tfmini_plus::TFMP<UART>) -> Result<(), String> {
+    let (a, b, c) = tfmp.get_firmware_version()?;
+    println!("Firmware: {a}.{b}.{c}");
+    tfmp.into_trigger_mode()?;
+    tfmp.set_output_format(OutputFormat::MM)?;
+    Ok(())
 }

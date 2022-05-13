@@ -16,7 +16,7 @@
         {
             "label": "Upload and Monitor ESP Linux",
             "type": "shell",
-            "command": "read port; sudo espflash $port target/xtensa-esp32-espidf/debug/speedracer-esp32 --monitor",
+            "command": "espflash target/xtensa-esp32-espidf/debug/speedracer-esp32 --monitor",
         }
     ]
 }
