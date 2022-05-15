@@ -429,7 +429,7 @@ impl<UART: Uart> TFMP<UART> {
         // Check what the response was
         let result = command.get_response(&mut self.rx);
         // Pause for a bit
-        FreeRtos.delay_ms(1u32);
+        // FreeRtos.delay_ms(1u32);
         result
     }
 

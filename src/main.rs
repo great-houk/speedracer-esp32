@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
 use esp_idf_hal::prelude::*;
 use esp_idf_hal::{serial, serial::{Uart, UART1}};
@@ -18,7 +20,7 @@ fn main() {
 
     let config = serial::config::Config::default().baudrate(Hertz(115_200));
 
-    let sensor_pins = [(pins.gpio18, pins.gpio5)];
+    let sensor_pins = [(pins.gpio25, pins.gpio26)];
 
     let mut tfmps = vec![];
 
@@ -44,12 +46,15 @@ fn main() {
     }
 
     loop {
+        let time = Instant::now();
         let result = tfmps[0].trigger();
         if let Ok((dist, strength, temp, _)) = result {
-            println!("Data: {dist}, {strength}, {temp}")
+            print!("Data: {dist}, {strength}, {temp}")
         } else {
-            println!("Error: {result:?}")
+            print!("Error: {result:?}")
         }
+        let fps = 1000 / time.elapsed().as_millis();
+        println!("\tFPS: {}", fps);
     }
 }
 
