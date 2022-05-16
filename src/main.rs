@@ -1,8 +1,9 @@
 #![feature(generic_arg_infer)]
 use std::sync::{Mutex, Arc};
 
+use embedded_hal::prelude::_embedded_hal_blocking_delay_DelayMs;
 use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
-use esp_idf_hal::prelude::*;
+use esp_idf_hal::{prelude::*, delay::FreeRtos};
 use esp_idf_hal::serial::Uart;
 use tfmini_plus::{TFMPError, TFMP};
 
@@ -51,19 +52,31 @@ fn main() {
         init_tfmp(tfmp).unwrap();
     }
 
+    // let mut serial = tfmps[0].get_serial();
     loop {
         let time = std::time::Instant::now();
         for (i, tfmp) in tfmps.iter_mut().enumerate() {
             print!("TFMP {i}: ");
-            let result = tfmp.trigger();
+            let result = tfmp.read();
             if let Ok((dist, strength, temp, _)) = result {
-                // print!("Data: {dist}, {strength}, {temp}")
+                print!("Data: {dist}, {strength}, {temp}")
+            // let result = tfmp.read_byte(&mut serial);
+            // if let Ok(d) = result {
+            //     match d as char {
+            //         '\n' => print!("\\n"),
+            //         '\r' => print!("\\r"),
+            //         c => print!("{c}"),
+            //     }
+            // let result = tfmp.read_pixhawk();
+            // if let Ok(s) = result {
+            //     print!("{s}");
             } else {
                 print!("Error: {result:?}")
             }
             print!("\t");
         }
-        let fps = 1000 / time.elapsed().as_millis();
+        // FreeRtos.delay_ms(1u32);
+        let fps = 1_000 * 1_000 / (match time.elapsed().as_micros() { 0 => 1, o => o });
         println!("\tFPS: {fps}");
     }
 }
@@ -71,7 +84,8 @@ fn main() {
 fn init_tfmp<UART: Uart>(tfmp: &mut tfmini_plus::TFMP<UART>) -> Result<(), TFMPError> {
     let (a, b, c) = tfmp.get_firmware_version()?;
     println!("Firmware: {a}.{b}.{c}");
-    tfmp.into_trigger_mode()?;
+    tfmp.set_framerate(10)?;
+    // tfmp.into_trigger_mode()?;
     tfmp.set_output_format(OutputFormat::MM)?;
     Ok(())
 }

@@ -120,12 +120,12 @@ impl Command {
                 Err(err) => match err {
                     Error::Other(err) => return Err(TFMPError::SerialError(err)),
                     Error::WouldBlock => {
-                        i += 1;
                         // One second's passed, no response is coming
-                        if i > 1000 {
+                        i += 1;
+                        if i > 1_000 * 1_000 {
                             return Err(TFMPError::NoResponse);
                         }
-                        FreeRtos.delay_ms(1u32);
+                        FreeRtos.delay_us(10u32);
                     },
                 },
             }
@@ -178,12 +178,12 @@ impl Command {
                 Err(Error::Other(err)) => return Err(TFMPError::SerialError(err)),
                 _ => {},
             }
-            i += 1;
             // One second's passed, no response is coming
-            if i > 1000 {
+            i += 1;
+            if i > 1_000 * 1_000 {
                 return Err(TFMPError::NoResponse);
             }
-            FreeRtos.delay_ms(1u32);
+            FreeRtos.delay_us(10u32);
         }
         // Check ID
         if response[2] != id {
@@ -317,11 +317,14 @@ impl<UART: Uart> TFMP<UART> {
         if self.output_enabled == false {
             return Err(TFMPError::OutputDisabled);
         }
+        let time = Instant::now();
         // Create buffer to store upcoming frame
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(6);
         // Sanity check
         let mut i = 0;
         let mut serial = self.get_serial();
+        // println!("Init Read in {}", time.elapsed().as_micros());
+        let time = Instant::now();
         // Read until we find 13, 10, which are \r\n for this thing
         while buf.len() < 2 || &buf[buf.len() - 2..] != &['\r' as u8, '\n' as u8] {
             let byte = self.read_byte(&mut serial)?;
@@ -332,8 +335,9 @@ impl<UART: Uart> TFMP<UART> {
             }
             i += 1;
         }
+        // println!("Read output in {}", time.elapsed().as_micros());
         // Return output
-        Ok(std::str::from_utf8(&buf).unwrap().to_string())
+        Ok(std::str::from_utf8(&buf[..buf.len() - 2]).expect(&(format!("Error buf: {buf:?}"))).to_string())
     }
 
     /// Returns the firmware version of the sensor, in the format (V3, V2, V1) for V3.V2.V1
@@ -353,7 +357,7 @@ impl<UART: Uart> TFMP<UART> {
 
     /// Change the framerate of the sensor. 
     /// Set to zero to make the sensor a oneshot, triggered by the trigger command
-    pub fn change_framerate(&mut self, fps: u16) -> Result<u16, TFMPError> {
+    pub fn set_framerate(&mut self, fps: u16) -> Result<u16, TFMPError> {
         if let Response::Framerate(fps) = self.send_command(Command::FrameRate(fps))? {
             self.save_changes()?;
             self.framerate = fps;
@@ -378,7 +382,7 @@ impl<UART: Uart> TFMP<UART> {
 
     /// Puts the sensor in trigger mode. The same as setting the framerate to zero
     pub fn into_trigger_mode(&mut self) -> Result<(), TFMPError> {
-        let fps = self.change_framerate(0)?;
+        let fps = self.set_framerate(0)?;
         if fps != 0 {
             Err(TFMPError::CommandFailed)
         } else {
@@ -446,16 +450,12 @@ impl<UART: Uart> TFMP<UART> {
         // Get command to send
         let data = command.get_bytes();
         // Get serial
-        let time = Instant::now();
         let mut serial = self.get_serial();
-        println!("Got Serial in {}", time.elapsed().as_millis());
         // Send the actual data
-        let time = Instant::now();
         for byte in data {
             block!(serial.write(byte))?;
         }
         block!(serial.flush())?;
-        println!("Sent data in {}", time.elapsed().as_millis());
         // Check what the response was
         let result = command.get_response(&mut serial);
         // Pause for a bit
@@ -494,21 +494,21 @@ impl<UART: Uart> TFMP<UART> {
                     Err(Error::Other(err)) => return Err(err.into()),
                 }
                 i += 1;
-                if i >= 1000 {
+                if i >= 1_000 * 1_000 {
                     return Err(TFMPError::NoResponse);
                 }
-                FreeRtos.delay_ms(1u32);
+                FreeRtos.delay_us(10u32);
             }
         };
         Ok(byte)
     }
     
-    fn get_serial(&self) -> Serial<UART> {
+    pub fn get_serial(&self) -> Serial<UART> {
         Serial::new(self.uart.lock().unwrap(), self.tx, self.rx)
     }
 }
 
-struct Serial<'a, UART: Uart> {
+pub struct Serial<'a, UART: Uart> {
     _uart: MutexGuard<'a, UART>,
 }
 
@@ -525,6 +525,8 @@ impl<'a, UART: Uart> Serial<'a, UART> {
                 -1,
             )
         }).unwrap();
+        
+        FreeRtos.delay_us(250u32);
 
         EspError::convert(unsafe {
             uart_flush_input(UART::port())
