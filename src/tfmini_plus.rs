@@ -8,6 +8,9 @@ use embedded_hal::prelude::*;
 use esp_idf_sys::{EspError, uart_is_driver_installed};
 use nb::{block, Error};
 
+type MilliSeconds = u16;
+const TIMEOUT: MilliSeconds = 250;
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum OutputFormat {
     CM,
@@ -105,7 +108,7 @@ impl Command {
                         } 
                         // If this is the second time, then continue assuming it's a full response
                         else {
-                            println!("Read took {i} iterations");
+                            // println!("Read took {i} iterations");
                             response.extend([0x59, 0x59]);
                             for _ in 0..RESPONSE_LEN - 2 {
                                 response.push(block!(serial.read())?);
@@ -123,7 +126,7 @@ impl Command {
                     Error::WouldBlock => {
                         // One second's passed, no response is coming
                         i += 1;
-                        if i > 1_000 * 1_000 {
+                        if i > TIMEOUT * 100 {
                             return Err(TFMPError::NoResponse);
                         }
                         FreeRtos.delay_us(10u32);
@@ -168,7 +171,7 @@ impl Command {
                             continue 'find_message;
                         }
                         // We found the target response, so save it
-                        println!("Read took {i} iterations");
+                        // println!("Read took {i} iterations");
                         response.extend([0x5A, len]);
                         for _ in 0..len - 2 {
                             let a = block!(serial.read())?;
@@ -182,7 +185,7 @@ impl Command {
             }
             // One second's passed, no response is coming
             i += 1;
-            if i > 1_000 * 1_000 {
+            if i > TIMEOUT * 100 {
                 return Err(TFMPError::NoResponse);
             }
             FreeRtos.delay_us(10u32);
@@ -277,7 +280,7 @@ impl<UART: Uart> TFMP<UART> {
 
     /// Returns seperated data from sensor in format:
     /// (Distance 0-1200, Strength 0-65535, Temp in Celsius)
-    pub fn read(&mut self) -> Result<(u16, u16, f32, Vec<u8>), TFMPError> {
+    pub fn read(&mut self) -> Result<(u16, u16, u16, Vec<u8>), TFMPError> {
         if self.output_format == OutputFormat::Pixhawk {
             return Err(TFMPError::WrongMethod);
         }
@@ -290,9 +293,9 @@ impl<UART: Uart> TFMP<UART> {
         let mut serial = self.get_serial();
         loop {
             // Attempt to find first byte
-            for _ in 0..10 { if self.read_byte(&mut serial)? == 0x59 { break }}
+            for _ in 0..10 { if Self::read_byte(&mut serial)? == 0x59 { break }}
             // Read second magic byte
-            if self.read_byte(&mut serial)? == 0x59 { break };
+            if Self::read_byte(&mut serial)? == 0x59 { break };
             // Increment fail counter if it doesn't work
             i += 1;
             if i > 10 {
@@ -303,7 +306,7 @@ impl<UART: Uart> TFMP<UART> {
         // So read all data into an array for checksum checking
         let mut buf = vec![0x59u8; 9];
         for i in 2..buf.len() {
-            buf[i] = self.read_byte(&mut serial)?;
+            buf[i] = Self::read_byte(&mut serial)?;
         }
         // Read data
         self.read_data_frame(buf)
@@ -329,7 +332,7 @@ impl<UART: Uart> TFMP<UART> {
         let time = Instant::now();
         // Read until we find 13, 10, which are \r\n for this thing
         while buf.len() < 2 || &buf[buf.len() - 2..] != &['\r' as u8, '\n' as u8] {
-            let byte = self.read_byte(&mut serial)?;
+            let byte = Self::read_byte(&mut serial)?;
             buf.push(byte);
             // Just in case...
             if i > 100 {
@@ -337,7 +340,7 @@ impl<UART: Uart> TFMP<UART> {
             }
             i += 1;
         }
-        // println!("Read output in {}", time.elapsed().as_micros());
+        // // println!("Read output in {}", time.elapsed().as_micros());
         // Return output
         Ok(std::str::from_utf8(&buf[..buf.len() - 2]).expect(&(format!("Error buf: {buf:?}"))).to_string())
     }
@@ -370,7 +373,7 @@ impl<UART: Uart> TFMP<UART> {
     }
 
     /// Triggers the sensor to capture, given it is in trigger mode (The framerate is zero)
-    pub fn trigger(&mut self) -> Result<(u16, u16, f32, Vec<u8>), TFMPError> {
+    pub fn trigger(&mut self) -> Result<(u16, u16, u16, Vec<u8>), TFMPError> {
         if self.framerate != 0 {
             return Err(TFMPError::NotInTriggerMode);
         }
@@ -465,7 +468,7 @@ impl<UART: Uart> TFMP<UART> {
         result
     }
 
-    fn read_data_frame(&self, buf: Vec<u8>) -> Result<(u16, u16, f32, Vec<u8>), TFMPError>  {
+    fn read_data_frame(&self, buf: Vec<u8>) -> Result<(u16, u16, u16, Vec<u8>), TFMPError>  {
         // Check checksum
         let checksum = checksum(&buf[..8]);
         if checksum != buf[8] {
@@ -478,7 +481,7 @@ impl<UART: Uart> TFMP<UART> {
             // Next, read Strength
             let strength = (buf[4] as u16) | ((buf[5] as u16) << 8);
             // Finally, read and convert temp to Celsius
-            let temp = ((buf[6] as u16) | ((buf[7] as u16) << 8)) as f32 / 8. - 256.;
+            let temp = ((buf[6] as u16) | ((buf[7] as u16) << 8)) / 8 - 256;
             // Return
             (dist, strength, temp)
         };
@@ -486,7 +489,7 @@ impl<UART: Uart> TFMP<UART> {
         Ok((dist, strength, temp, buf))
     }
 
-    pub fn read_byte(&self, serial: &mut Serial<UART>) -> Result<u8, TFMPError> {
+    pub fn read_byte(serial: &mut Serial<UART>) -> Result<u8, TFMPError> {
         let byte = {
             let mut i = 1;
             let b = loop {
@@ -496,12 +499,12 @@ impl<UART: Uart> TFMP<UART> {
                     Err(Error::Other(err)) => return Err(err.into()),
                 }
                 i += 1;
-                if i >= 1_000 * 1_000 {
+                if i >= TIMEOUT * 100 {
                     return Err(TFMPError::NoResponse);
                 }
                 FreeRtos.delay_us(10u32);
             };
-            println!("Read took {i} iterations");
+            // println!("Read took {i} iterations");
             b
         };
         Ok(byte)

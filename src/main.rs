@@ -20,6 +20,7 @@ fn main() {
     let pins = peripherals.pins;
 
     let uart = Arc::new(Mutex::new(peripherals.uart1));
+    println!("Hi");
 
     // let sensor_pins = [(pins.gpio18, pins.gpio5)];//, Box::new((pins.gpio32, pins.gpio34))];
 
@@ -44,8 +45,9 @@ fn main() {
 
     // Tx: white, Rx: green
     let mut tfmps = [
-        TFMP::new(uart.clone(), pins.gpio25, pins.gpio26).unwrap(),
-        // TFMP::new(uart.clone(), pins.gpio32, pins.gpio33).unwrap()
+        TFMP::new(uart.clone(), pins.gpio12, pins.gpio14).unwrap(),
+        TFMP::new(uart.clone(), pins.gpio33, pins.gpio32).unwrap(),
+        TFMP::new(uart.clone(), pins.gpio27, pins.gpio26).unwrap(),
     ];
 
     for tfmp in &mut tfmps {
@@ -55,10 +57,12 @@ fn main() {
     // let mut serial = tfmps[0].get_serial();
     loop {
         let time = std::time::Instant::now();
-
+        
         for (i, tfmp) in tfmps.iter_mut().enumerate() {
             print!("TFMP {i}: ");
+            let latency = std::time::Instant::now();
             let result = tfmp.read();
+            print!("Latency: {}    ", latency.elapsed().as_micros());
             if let Ok((dist, strength, temp, _)) = result {
                 print!("Data: {dist}, {strength}, {temp}")
             // let result = tfmp.read_byte(&mut serial);
@@ -77,8 +81,8 @@ fn main() {
             print!("\t");
         }
         
-        // FreeRtos.delay_ms(1u32);
-        let fps = 1_000 * 1_000 / (match time.elapsed().as_micros() { 0 => 1, o => o });
+        FreeRtos.delay_ms(1u32);
+        let fps = (1_000 * 1_000) / (match time.elapsed().as_micros() { 0 => 1, o => o });
         println!("\tFPS: {fps}");
     }
 }
@@ -86,7 +90,7 @@ fn main() {
 fn init_tfmp<UART: Uart>(tfmp: &mut tfmini_plus::TFMP<UART>) -> Result<(), TFMPError> {
     let (a, b, c) = tfmp.get_firmware_version()?;
     println!("Firmware: {a}.{b}.{c}");
-    tfmp.set_framerate(10)?;
+    tfmp.set_framerate(750)?;
     // tfmp.into_trigger_mode()?;
     tfmp.set_output_format(OutputFormat::MM)?;
     Ok(())
