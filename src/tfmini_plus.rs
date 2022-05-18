@@ -105,6 +105,7 @@ impl Command {
                         } 
                         // If this is the second time, then continue assuming it's a full response
                         else {
+                            println!("Read took {i} iterations");
                             response.extend([0x59, 0x59]);
                             for _ in 0..RESPONSE_LEN - 2 {
                                 response.push(block!(serial.read())?);
@@ -167,6 +168,7 @@ impl Command {
                             continue 'find_message;
                         }
                         // We found the target response, so save it
+                        println!("Read took {i} iterations");
                         response.extend([0x5A, len]);
                         for _ in 0..len - 2 {
                             let a = block!(serial.read())?;
@@ -487,7 +489,7 @@ impl<UART: Uart> TFMP<UART> {
     pub fn read_byte(&self, serial: &mut Serial<UART>) -> Result<u8, TFMPError> {
         let byte = {
             let mut i = 1;
-            loop {
+            let b = loop {
                 match serial.read() {
                     Ok(val) => break val,
                     Err(Error::WouldBlock) => {},
@@ -498,7 +500,9 @@ impl<UART: Uart> TFMP<UART> {
                     return Err(TFMPError::NoResponse);
                 }
                 FreeRtos.delay_us(10u32);
-            }
+            };
+            println!("Read took {i} iterations");
+            b
         };
         Ok(byte)
     }
@@ -514,7 +518,11 @@ pub struct Serial<'a, UART: Uart> {
 
 impl<'a, UART: Uart> Serial<'a, UART> {
     pub fn new(uart: MutexGuard<'a, UART>, tx: i32, rx: i32) -> Self {
-        use esp_idf_sys::{uart_flush_input, uart_set_pin};
+        use esp_idf_sys::{uart_read_bytes, uart_flush_input, uart_set_pin};
+
+        EspError::convert(unsafe {
+            uart_flush_input(UART::port())
+        }).unwrap();
 
         EspError::convert(unsafe {
             uart_set_pin(
@@ -525,12 +533,15 @@ impl<'a, UART: Uart> Serial<'a, UART> {
                 -1,
             )
         }).unwrap();
-        
-        FreeRtos.delay_us(250u32);
+
+        let mut buf = [0u8; 10];
+        unsafe { uart_read_bytes(UART::port(), &mut buf as *mut u8 as *mut _, buf.len() as u32, 0) };
 
         EspError::convert(unsafe {
             uart_flush_input(UART::port())
         }).unwrap();
+        
+        // FreeRtos.delay_us(250u32);
 
         Self { _uart: uart }
     }

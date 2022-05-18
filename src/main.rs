@@ -55,6 +55,7 @@ fn main() {
     // let mut serial = tfmps[0].get_serial();
     loop {
         let time = std::time::Instant::now();
+
         for (i, tfmp) in tfmps.iter_mut().enumerate() {
             print!("TFMP {i}: ");
             let result = tfmp.read();
@@ -75,6 +76,7 @@ fn main() {
             }
             print!("\t");
         }
+        
         // FreeRtos.delay_ms(1u32);
         let fps = 1_000 * 1_000 / (match time.elapsed().as_micros() { 0 => 1, o => o });
         println!("\tFPS: {fps}");
