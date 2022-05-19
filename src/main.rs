@@ -1,5 +1,6 @@
 #![feature(generic_arg_infer)]
 use std::sync::{Mutex, Arc};
+use std::time::Instant;
 
 use embedded_hal::prelude::_embedded_hal_blocking_delay_DelayMs;
 use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
@@ -20,33 +21,11 @@ fn main() {
     let pins = peripherals.pins;
 
     let uart = Arc::new(Mutex::new(peripherals.uart1));
-    println!("Hi");
-
-    // let sensor_pins = [(pins.gpio18, pins.gpio5)];//, Box::new((pins.gpio32, pins.gpio34))];
-
-    // let mut tfmps = vec![];
-
-    // for (white, green) in sensor_pins {
-    //     let uart = unsafe { UART1::new() };
-    //     let sensor_serial: serial::Serial<serial::UART1, _, _> = serial::Serial::new(
-    //         uart,
-    //         serial::Pins {
-    //             tx: white,
-    //             rx: green,
-    //             cts: None,
-    //             rts: None,
-    //         },
-    //         config
-    //     ).unwrap();
-    //     let tfmp = tfmini_plus::TFMP::new(sensor_serial).unwrap();
-
-    //     tfmps.push(tfmp);
-    // }
 
     // Tx: white, Rx: green
     let mut tfmps = [
         TFMP::new(uart.clone(), pins.gpio12, pins.gpio14).unwrap(),
-        TFMP::new(uart.clone(), pins.gpio33, pins.gpio32).unwrap(),
+        TFMP::new(uart.clone(), pins.gpio25, pins.gpio33).unwrap(),
         TFMP::new(uart.clone(), pins.gpio27, pins.gpio26).unwrap(),
     ];
 
@@ -54,32 +33,11 @@ fn main() {
         init_tfmp(tfmp).unwrap();
     }
 
-    // let mut serial = tfmps[0].get_serial();
+
     loop {
         let time = std::time::Instant::now();
-        
-        for (i, tfmp) in tfmps.iter_mut().enumerate() {
-            print!("TFMP {i}: ");
-            let latency = std::time::Instant::now();
-            let result = tfmp.read();
-            print!("Latency: {}    ", latency.elapsed().as_micros());
-            if let Ok((dist, strength, temp, _)) = result {
-                print!("Data: {dist}, {strength}, {temp}")
-            // let result = tfmp.read_byte(&mut serial);
-            // if let Ok(d) = result {
-            //     match d as char {
-            //         '\n' => print!("\\n"),
-            //         '\r' => print!("\\r"),
-            //         c => print!("{c}"),
-            //     }
-            // let result = tfmp.read_pixhawk();
-            // if let Ok(s) = result {
-            //     print!("{s}");
-            } else {
-                print!("Error: {result:?}")
-            }
-            print!("\t");
-        }
+
+        print_pretty_output(&mut tfmps);
         
         FreeRtos.delay_ms(1u32);
         let fps = (1_000 * 1_000) / (match time.elapsed().as_micros() { 0 => 1, o => o });
@@ -87,11 +45,56 @@ fn main() {
     }
 }
 
+fn fps_test(tfmps: &mut [tfmini_plus::TFMP<impl Uart>]) -> () {
+    let mut max_fps = 0;
+    let mut max_rate = 0;
+    const ITERS: u128 = 100;
+
+    for rate in (300..501).step_by(10) {
+        for tfmp in tfmps.iter_mut() {
+            while let Err(_) = tfmp.set_framerate(rate) {};
+        }
+        let time = Instant::now();
+        for _ in 0..ITERS {
+            for tfmp in tfmps.iter_mut() {
+                while let Err(_) = tfmp.read() {};
+            }
+        }
+        let fps = (1_000 * 1_000 * ITERS) / (match time.elapsed().as_micros() { 0 => 1, o => o });
+        if fps > max_fps {
+            max_fps = fps;
+            max_rate = rate;
+        }
+        println!("Rate {rate} has fps {fps}");
+        FreeRtos.delay_ms(1u32);
+    }
+    println!("Max FPS ({max_fps}) at rate {max_rate}");
+}
+
+fn print_pretty_output(tfmps: &mut [tfmini_plus::TFMP<impl Uart>]) -> () {
+    for (i, tfmp) in tfmps.iter_mut().enumerate() {
+        print!("TFMP {i}: ");
+        let latency = std::time::Instant::now();
+        let result = tfmp.read();
+        // let result = tfmp.read_pixhawk();
+        print!("Latency: {}    ", latency.elapsed().as_micros());
+        if let Ok((dist, strength, temp, _)) = result {
+            print!("Data: {dist}, {strength}, {temp}")
+        // if let Ok(s) = result {
+        //     print!("{s}")
+        } else {
+            print!("Error: {result:?}")
+        }
+        print!("\t");
+    }
+}
+
 fn init_tfmp<UART: Uart>(tfmp: &mut tfmini_plus::TFMP<UART>) -> Result<(), TFMPError> {
     let (a, b, c) = tfmp.get_firmware_version()?;
     println!("Firmware: {a}.{b}.{c}");
-    tfmp.set_framerate(750)?;
+    // 500 Works best for some reason, any lower is suboptimal, and any higher ruins it
+    tfmp.set_framerate(500)?;
     // tfmp.into_trigger_mode()?;
-    tfmp.set_output_format(OutputFormat::MM)?;
+    tfmp.set_output_format(OutputFormat::CM)?;
     Ok(())
 }
