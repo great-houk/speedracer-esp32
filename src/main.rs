@@ -1,11 +1,11 @@
 #![feature(generic_arg_infer)]
-use std::sync::{Mutex, Arc};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use embedded_hal::prelude::_embedded_hal_blocking_delay_DelayMs;
-use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
-use esp_idf_hal::{prelude::*, delay::FreeRtos};
 use esp_idf_hal::serial::Uart;
+use esp_idf_hal::{delay::FreeRtos, prelude::*};
+use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
 use tfmini_plus::{TFMPError, TFMP};
 
 use crate::tfmini_plus::OutputFormat;
@@ -33,14 +33,17 @@ fn main() {
         init_tfmp(tfmp).unwrap();
     }
 
-
     loop {
         let time = std::time::Instant::now();
 
         print_pretty_output(&mut tfmps);
-        
+
         FreeRtos.delay_ms(1u32);
-        let fps = (1_000 * 1_000) / (match time.elapsed().as_micros() { 0 => 1, o => o });
+        let fps = (1_000 * 1_000)
+            / (match time.elapsed().as_micros() {
+                0 => 1,
+                o => o,
+            });
         println!("\tFPS: {fps}");
     }
 }
@@ -52,15 +55,19 @@ fn fps_test(tfmps: &mut [tfmini_plus::TFMP<impl Uart>]) -> () {
 
     for rate in (300..501).step_by(10) {
         for tfmp in tfmps.iter_mut() {
-            while let Err(_) = tfmp.set_framerate(rate) {};
+            while let Err(_) = tfmp.set_framerate(rate) {}
         }
         let time = Instant::now();
         for _ in 0..ITERS {
             for tfmp in tfmps.iter_mut() {
-                while let Err(_) = tfmp.read() {};
+                while let Err(_) = tfmp.read() {}
             }
         }
-        let fps = (1_000 * 1_000 * ITERS) / (match time.elapsed().as_micros() { 0 => 1, o => o });
+        let fps = (1_000 * 1_000 * ITERS)
+            / (match time.elapsed().as_micros() {
+                0 => 1,
+                o => o,
+            });
         if fps > max_fps {
             max_fps = fps;
             max_rate = rate;

@@ -1,13 +1,13 @@
 #![allow(dead_code)]
-use std::sync::{Mutex, Arc, MutexGuard};
-use esp_idf_hal::serial::config::{FlowControl, StopBits, Parity, DataBits};
-use esp_idf_hal::serial::{Uart, SerialError};
-use esp_idf_hal::gpio::{InputPin, OutputPin};
-use esp_idf_hal::delay::FreeRtos;
 use embedded_hal::prelude::*;
-use esp_idf_sys::{EspError, uart_is_driver_installed};
+use esp_idf_hal::delay::FreeRtos;
+use esp_idf_hal::gpio::{InputPin, OutputPin};
+use esp_idf_hal::serial::config::{DataBits, FlowControl, Parity, StopBits};
+use esp_idf_hal::serial::{SerialError, Uart};
+use esp_idf_sys::{uart_is_driver_installed, EspError};
 use nb::{block, Error};
 use serial_util::*;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 type MilliSeconds = u32;
 const TIMEOUT: MilliSeconds = 250;
@@ -68,7 +68,7 @@ impl Command {
                 let checksum = checksum(&output);
                 output.push(checksum);
                 output
-            },
+            }
             Command::TriggerDetection => vec![0x5A, 0x04, 0x04, 0x62],
             Command::OutputFormat(format) => {
                 let mut output = vec![0x5A, 0x05, 0x05];
@@ -78,21 +78,26 @@ impl Command {
                     OutputFormat::Pixhawk => &[0x02, 0x66],
                 });
                 output
-            },
+            }
             Command::BaudRate(rate) => {
                 let mut output = vec![0x5A, 0x08, 0x06];
                 output.extend_from_slice(&rate.to_le_bytes());
                 let checksum = checksum(&output);
                 output.push(checksum);
                 output
-            },
-            Command::EnableOutput(enabled) => vec![0x5A, 0x05, 0x07, if *enabled { 1 } else { 0 }, 0x67],
+            }
+            Command::EnableOutput(enabled) => {
+                vec![0x5A, 0x05, 0x07, if *enabled { 1 } else { 0 }, 0x67]
+            }
             Command::ResetFactorySettings => vec![0x5A, 0x04, 0x10, 0x6E],
             Command::SaveSettings => vec![0x5A, 0x04, 0x11, 0x6F],
         }
     }
 
-    pub fn get_response<UART: Uart>(&self, serial: &mut Serial<UART>) -> Result<Response, TFMPError> {
+    pub fn get_response<UART: Uart>(
+        &self,
+        serial: &mut Serial<UART>,
+    ) -> Result<Response, TFMPError> {
         match self {
             Command::TriggerDetection => self.receive_frame(serial),
             _ => self.receive_response(serial),
@@ -113,7 +118,10 @@ impl Command {
         return Ok(Response::DataFrame(response));
     }
 
-    fn receive_response<UART: Uart>(&self, serial: &mut Serial<UART>) -> Result<Response, TFMPError> {
+    fn receive_response<UART: Uart>(
+        &self,
+        serial: &mut Serial<UART>,
+    ) -> Result<Response, TFMPError> {
         // Get supposed length and ID
         let (len, id) = match self {
             Command::GetFirmwareVersion => (0x07, 0x01),
@@ -136,8 +144,13 @@ impl Command {
         }
         // Interpret Response
         match self {
-            Command::GetFirmwareVersion => Ok(Response::Version(response[5], response[4], response[3])),
-            Command::FrameRate(_) => Ok(Response::Framerate(u16::from_le_bytes([response[3], response[4]]))),
+            Command::GetFirmwareVersion => {
+                Ok(Response::Version(response[5], response[4], response[3]))
+            }
+            Command::FrameRate(_) => Ok(Response::Framerate(u16::from_le_bytes([
+                response[3],
+                response[4],
+            ]))),
             Command::TriggerDetection => unreachable!(),
             Command::OutputFormat(_) => Ok(Response::OutputFormat(match response[3] {
                 0x01 => OutputFormat::CM,
@@ -145,9 +158,24 @@ impl Command {
                 0x06 => OutputFormat::MM,
                 _ => unreachable!(),
             })),
-            Command::BaudRate(_) => Ok(Response::BaudRate(u32::from_le_bytes([response[3], response[4], response[6], response[6]]))),
-            Command::EnableOutput(_) => Ok(Response::OutputEnabled(if response[3] == 0 { false } else { true })),
-            Command::SystemReset | Command::ResetFactorySettings | Command::SaveSettings => if response[3] == 0 { Ok(Response::None) } else { Err(TFMPError::CommandFailed)},
+            Command::BaudRate(_) => Ok(Response::BaudRate(u32::from_le_bytes([
+                response[3],
+                response[4],
+                response[6],
+                response[6],
+            ]))),
+            Command::EnableOutput(_) => Ok(Response::OutputEnabled(if response[3] == 0 {
+                false
+            } else {
+                true
+            })),
+            Command::SystemReset | Command::ResetFactorySettings | Command::SaveSettings => {
+                if response[3] == 0 {
+                    Ok(Response::None)
+                } else {
+                    Err(TFMPError::CommandFailed)
+                }
+            }
         }
     }
 }
@@ -174,8 +202,12 @@ pub struct TFMP<UART: Uart> {
 
 // Contains Useful Commands
 impl<UART: Uart> TFMP<UART> {
-    pub fn new<TX: OutputPin, RX: InputPin>(uart: Arc<Mutex<UART>>, tx: TX, rx: RX) -> Result<Self, EspError> {
-        use esp_idf_sys::{uart_driver_install, uart_param_config, uart_config_t};
+    pub fn new<TX: OutputPin, RX: InputPin>(
+        uart: Arc<Mutex<UART>>,
+        tx: TX,
+        rx: RX,
+    ) -> Result<Self, EspError> {
+        use esp_idf_sys::{uart_config_t, uart_driver_install, uart_param_config};
 
         // Configure Serial Lines
         let uart_config = uart_config_t {
@@ -190,7 +222,7 @@ impl<UART: Uart> TFMP<UART> {
         EspError::convert(unsafe { uart_param_config(UART::port(), &uart_config) }).unwrap();
 
         const UART_FIFO_SIZE: i32 = 128;
-        if ! unsafe { uart_is_driver_installed(UART::port()) } {
+        if !unsafe { uart_is_driver_installed(UART::port()) } {
             EspError::convert(unsafe {
                 uart_driver_install(
                     UART::port(),
@@ -200,12 +232,13 @@ impl<UART: Uart> TFMP<UART> {
                     core::ptr::null_mut(),
                     0,
                 )
-            }).unwrap();
+            })
+            .unwrap();
         }
 
         Ok(Self {
             uart,
-            tx: tx.pin(), 
+            tx: tx.pin(),
             rx: rx.pin(),
             framerate: 100,
             baudrate: 115200,
@@ -243,11 +276,11 @@ impl<UART: Uart> TFMP<UART> {
         result
     }
 
-    fn interpret_data_frame(&self, buf: Vec<u8>) -> Result<(u16, u16, u16, Vec<u8>), TFMPError>  {
+    fn interpret_data_frame(&self, buf: Vec<u8>) -> Result<(u16, u16, u16, Vec<u8>), TFMPError> {
         // Check checksum
         let checksum = checksum(&buf[..8]);
         if checksum != buf[8] {
-            return Err(TFMPError::BadChecksum(buf))
+            return Err(TFMPError::BadChecksum(buf));
         }
         // Extraxt values
         let (dist, strength, temp) = {
@@ -316,7 +349,7 @@ impl<UART: Uart> TFMP<UART> {
             if i > 100 {
                 return Err(TFMPError::BadData);
             }
-                i += 1;
+            i += 1;
         }
         // // println!("Read output in {}", time.elapsed().as_micros());
         // Return output minus the \r\n
@@ -338,7 +371,7 @@ impl<UART: Uart> TFMP<UART> {
         Ok(())
     }
 
-    /// Change the framerate of the sensor. 
+    /// Change the framerate of the sensor.
     /// Set to zero to make the sensor a oneshot, triggered by the trigger command
     pub fn set_framerate(&mut self, fps: u16) -> Result<u16, TFMPError> {
         if let Response::Framerate(fps) = self.send_command(Command::FrameRate(fps))? {
@@ -394,13 +427,15 @@ impl<UART: Uart> TFMP<UART> {
             unreachable!()
         }
     }
-    
+
     /// Sets the output for the sensor to be enabled or disabled.
     pub fn enable_output(&mut self, enabled: bool) -> Result<(), TFMPError> {
-        if let Response::OutputEnabled(acc_enabled) = self.send_command(Command::EnableOutput(enabled))? {
+        if let Response::OutputEnabled(acc_enabled) =
+            self.send_command(Command::EnableOutput(enabled))?
+        {
             self.save_changes()?;
             if acc_enabled != enabled {
-                return Err(TFMPError::CommandFailed)
+                return Err(TFMPError::CommandFailed);
             }
             Ok(())
         } else {
@@ -420,57 +455,49 @@ impl<UART: Uart> TFMP<UART> {
     }
 }
 
-
 mod serial_util {
     use super::*;
-    
+
     pub struct Serial<'a, UART: Uart> {
         _uart: MutexGuard<'a, UART>,
     }
-    
+
     impl<'a, UART: Uart> Serial<'a, UART> {
         pub fn new(uart: MutexGuard<'a, UART>, tx: i32, rx: i32) -> Self {
-            use esp_idf_sys::{uart_read_bytes, uart_flush_input, uart_set_pin};
-    
-            EspError::convert(unsafe {
-                uart_flush_input(UART::port())
-            }).unwrap();
-    
-            EspError::convert(unsafe {
-                uart_set_pin(
-                    UART::port(),
-                    tx,
-                    rx,
-                    -1,
-                    -1,
-                )
-            }).unwrap();
-    
+            use esp_idf_sys::{uart_flush_input, uart_read_bytes, uart_set_pin};
+
+            EspError::convert(unsafe { uart_flush_input(UART::port()) }).unwrap();
+
+            EspError::convert(unsafe { uart_set_pin(UART::port(), tx, rx, -1, -1) }).unwrap();
+
             let mut buf = [0u8; 10];
-            unsafe { uart_read_bytes(UART::port(), &mut buf as *mut u8 as *mut _, buf.len() as u32, 0) };
-    
-            EspError::convert(unsafe {
-                uart_flush_input(UART::port())
-            }).unwrap();
-            
+            unsafe {
+                uart_read_bytes(
+                    UART::port(),
+                    &mut buf as *mut u8 as *mut _,
+                    buf.len() as u32,
+                    0,
+                )
+            };
+
+            EspError::convert(unsafe { uart_flush_input(UART::port()) }).unwrap();
+
             // FreeRtos.delay_us(250u32);
-    
+
             Self { _uart: uart }
         }
-    
+
         pub fn flush_rx(&mut self) -> Result<(), EspError> {
             use esp_idf_sys::uart_flush_input;
-            EspError::convert(unsafe {
-                uart_flush_input(UART::port())
-            })
+            EspError::convert(unsafe { uart_flush_input(UART::port()) })
         }
 
         pub fn read(&mut self) -> nb::Result<u8, SerialError> {
-            use esp_idf_sys::{ESP_ERR_INVALID_STATE, uart_read_bytes};
-            
+            use esp_idf_sys::{uart_read_bytes, ESP_ERR_INVALID_STATE};
+
             // Code copied from esp_idf_hal::serial::Rx::read
             let mut buf: u8 = 0;
-    
+
             // uart_read_bytes() returns error (-1) or how many bytes were read out
             // 0 means timeout and nothing is yet read out
             match unsafe { uart_read_bytes(UART::port(), &mut buf as *mut u8 as *mut _, 1, 0) } {
@@ -481,22 +508,22 @@ mod serial_util {
                 ))),
             }
         }
-    
+
         pub fn count(&self) -> Result<u8, EspError> {
-            use esp_idf_sys::{uart_get_buffered_data_len};
-    
+            use esp_idf_sys::uart_get_buffered_data_len;
+
             // Code copied from esp_idf_hal::serial::Rx::count
             let mut size = 0_u32;
-    
+
             EspError::check_and_return(
                 unsafe { uart_get_buffered_data_len(UART::port(), &mut size) },
-                size as u8
+                size as u8,
             )
         }
-    
+
         pub fn flush(&mut self) -> nb::Result<(), SerialError> {
-            use esp_idf_sys::{ESP_OK, ESP_ERR_TIMEOUT, uart_wait_tx_done, ESP_ERR_INVALID_STATE};
-    
+            use esp_idf_sys::{uart_wait_tx_done, ESP_ERR_INVALID_STATE, ESP_ERR_TIMEOUT, ESP_OK};
+
             // Code copied from esp_idf_hal::serial::Tx::flush
             match unsafe { uart_wait_tx_done(UART::port(), 0) } {
                 ESP_OK => Ok(()),
@@ -506,10 +533,10 @@ mod serial_util {
                 ))),
             }
         }
-    
+
         pub fn write(&mut self, byte: u8) -> nb::Result<(), SerialError> {
             use esp_idf_sys::{uart_write_bytes, ESP_ERR_INVALID_STATE};
-    
+
             // Code copied from esp_idf_hal::serial::Tx::flush
             // `uart_write_bytes()` returns error (-1) or how many bytes were written
             match unsafe { uart_write_bytes(UART::port(), &byte as *const u8 as *const _, 1) } {
@@ -520,9 +547,12 @@ mod serial_util {
             }
         }
     }
-    
 
-    pub fn read_data_frame(serial: &mut Serial<impl Uart>, pattern: &[u8], len: usize) -> Result<Vec<u8>, TFMPError> {
+    pub fn read_data_frame(
+        serial: &mut Serial<impl Uart>,
+        pattern: &[u8],
+        len: usize,
+    ) -> Result<Vec<u8>, TFMPError> {
         // Attempt to find pattern
         let mut i = 0;
         const MAX_ITER: i32 = 20;
@@ -557,7 +587,7 @@ mod serial_util {
             let b = loop {
                 match serial.read() {
                     Ok(val) => break val,
-                    Err(Error::WouldBlock) => {},
+                    Err(Error::WouldBlock) => {}
                     Err(Error::Other(err)) => return Err(err.into()),
                 }
                 i += 1;
@@ -570,7 +600,7 @@ mod serial_util {
         };
         Ok(byte)
     }
-    
+
     pub fn checksum(buf: &[u8]) -> u8 {
         buf.iter().fold(0, |acc, x| acc.wrapping_add(*x))
     }
