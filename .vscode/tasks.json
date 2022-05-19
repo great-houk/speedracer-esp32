@@ -4,9 +4,9 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "Run ESP32 Windows",
+            "label": "Build and Monitor ESP32 Windows",
             "type": "shell",
-            "command": "espflash COM5 target/xtensa-esp32-espidf/debug/speedracer-esp32 --monitor"
+            "command": "cargo b; espflash COM5 target/xtensa-esp32-espidf/debug/speedracer-esp32 --monitor"
         },
         {
             "label": "Build ESP32 Linux",

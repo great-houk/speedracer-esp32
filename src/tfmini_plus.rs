@@ -1,11 +1,18 @@
-use esp_idf_hal::serial::{Serial, Uart, Tx, Rx, SerialError};
+#![allow(dead_code)]
+use std::sync::{Mutex, Arc, MutexGuard};
+use std::time::Instant;
+// use std::time::Instant;
+use esp_idf_hal::serial::config::{FlowControl, StopBits, Parity, DataBits};
+use esp_idf_hal::serial::{Uart, SerialError};
 use esp_idf_hal::gpio::{InputPin, OutputPin};
 use esp_idf_hal::delay::FreeRtos;
-use esp_idf_sys::EspError;
 use embedded_hal::prelude::*;
-use embedded_hal::serial::Read;
-use embedded_hal::serial::Write;
+use esp_idf_sys::{EspError, uart_is_driver_installed};
 use nb::{block, Error};
+use serial_util::*;
+
+type MilliSeconds = u32;
+const TIMEOUT: MilliSeconds = 250;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum OutputFormat {
@@ -22,6 +29,7 @@ pub enum TFMPError {
     BadData,
     CommandFailed,
     SerialError(SerialError),
+    EspError(EspError),
     NotInTriggerMode,
     OutputDisabled,
     WrongMethod,
@@ -30,6 +38,12 @@ pub enum TFMPError {
 impl From<SerialError> for TFMPError {
     fn from(err: SerialError) -> Self {
         Self::SerialError(err)
+    }
+}
+
+impl From<EspError> for TFMPError {
+    fn from(err: EspError) -> Self {
+        Self::EspError(err)
     }
 }
 
@@ -80,55 +94,18 @@ impl Command {
         }
     }
 
-    pub fn get_response<UART: Uart>(&self, rx: &mut Rx<UART>) -> Result<Response, TFMPError> {
+    pub fn get_response<UART: Uart>(&self, serial: &mut Serial<UART>) -> Result<Response, TFMPError> {
         match self {
-            Command::TriggerDetection => self.receive_frame(rx),
-            _ => self.receive_response(rx),
+            Command::TriggerDetection => self.receive_frame(serial),
+            _ => self.receive_response(serial),
         }
     }
 
-    fn receive_frame<UART: Uart>(&self, rx: &mut Rx<UART>) -> Result<Response, TFMPError> {
+    fn receive_frame<UART: Uart>(&self, serial: &mut Serial<UART>) -> Result<Response, TFMPError> {
         // Find response
         const RESPONSE_LEN: usize = 9;
-        let mut response = Vec::with_capacity(RESPONSE_LEN);
-        let mut i = 0;
-        let mut previous_find = false;
-        loop {
-            match rx.read() {
-                Ok(ok) => {
-                    // Found a potential first or second byte
-                    if ok == 0x59 {
-                        // If this is the first byte, remeber and wait for the second to make sure
-                        if !previous_find {
-                            previous_find = true;
-                        } 
-                        // If this is the second time, then continue assuming it's a full response
-                        else {
-                            response.extend([0x59, 0x59]);
-                            for _ in 0..RESPONSE_LEN - 2 {
-                                response.push(block!(rx.read())?);
-                            }
-                            break;
-                        }
-                    } 
-                    // Reset
-                    else {
-                        previous_find = false;
-                    }
-                },
-                Err(err) => match err {
-                    Error::Other(err) => return Err(TFMPError::SerialError(err)),
-                    Error::WouldBlock => {
-                        i += 1;
-                        // One second's passed, no response is coming
-                        if i > 1000 {
-                            return Err(TFMPError::NoResponse);
-                        }
-                        FreeRtos.delay_ms(1u32);
-                    },
-                },
-            }
-        }
+        const RESPONSE_START: [u8; 2] = [0x59, 0x59];
+        let response = read_data_frame(serial, &RESPONSE_START, RESPONSE_LEN)?;
         // Check checksum
         let sum = checksum(&response[0..8]);
         if sum != response[8] {
@@ -138,10 +115,7 @@ impl Command {
         return Ok(Response::DataFrame(response));
     }
 
-    fn receive_response<UART: Uart>(&self, rx: &mut Rx<UART>) -> Result<Response, TFMPError> {
-        // Find Response
-        let mut response = Vec::with_capacity(9);
-        let mut i = 0;
+    fn receive_response<UART: Uart>(&self, serial: &mut Serial<UART>) -> Result<Response, TFMPError> {
         // Get supposed length and ID
         let (len, id) = match self {
             Command::GetFirmwareVersion => (0x07, 0x01),
@@ -154,40 +128,9 @@ impl Command {
             Command::ResetFactorySettings => (0x05, 0x10),
             Command::SaveSettings => (0x05, 0x11),
         };
+        let first_three_bytes = [0x5A, len, id];
         // Find message with that length and starting byte
-        'find_message: loop {
-            match rx.read() {
-                Ok(ok) => {
-                    if ok == 0x5A {
-                        // Assume we found a response
-                        let acc_len = block!(rx.read())?;
-                        // Check length, if not it continue
-                        if acc_len != len {
-                            continue 'find_message;
-                        }
-                        // We found the target response, so save it
-                        response.extend([0x5A, len]);
-                        for _ in 0..len - 2 {
-                            let a = block!(rx.read())?;
-                            response.push(a);
-                        }
-                        break 'find_message;
-                    }
-                },
-                Err(Error::Other(err)) => return Err(TFMPError::SerialError(err)),
-                _ => {},
-            }
-            i += 1;
-            // One second's passed, no response is coming
-            if i > 1000 {
-                return Err(TFMPError::NoResponse);
-            }
-            FreeRtos.delay_ms(1u32);
-        }
-        // Check ID
-        if response[2] != id {
-            return Err(TFMPError::WrongResponse(response));
-        }
+        let response = read_data_frame(serial, &first_three_bytes, len as usize)?;
         // Check checksum
         let sum = checksum(&response[..response.len() - 1]);
         if sum != response[response.len() - 1] {
@@ -222,26 +165,50 @@ enum Response {
 }
 
 pub struct TFMP<UART: Uart> {
-    tx: Tx<UART>,
-    rx: Rx<UART>,
+    uart: Arc<Mutex<UART>>,
+    tx: i32,
+    rx: i32,
     framerate: u16,
     baudrate: u32,
     output_format: OutputFormat,
     output_enabled: bool,
 }
 
+// Contains Useful Commands
 impl<UART: Uart> TFMP<UART> {
-    pub fn new<TX: OutputPin, RX: InputPin>(serial: Serial<UART, TX, RX>) -> Result<Self, EspError> {
+    pub fn new<TX: OutputPin, RX: InputPin>(uart: Arc<Mutex<UART>>, tx: TX, rx: RX) -> Result<Self, EspError> {
+        use esp_idf_sys::{uart_driver_install, uart_param_config, uart_config_t};
+
         // Configure Serial Lines
-        // serial.change_baudrate(115200)?;
-        // serial.change_data_bits(DataBits::DataBits8)?;
-        // serial.change_stop_bits(StopBits::STOP1)?;
-        // serial.change_parity(Parity::ParityNone)?;
-        let (tx, rx) = serial.split();
-        // Return Self
+        let uart_config = uart_config_t {
+            baud_rate: 115_200i32,
+            data_bits: DataBits::DataBits8.into(),
+            parity: Parity::ParityNone.into(),
+            stop_bits: StopBits::STOP1.into(),
+            flow_ctrl: FlowControl::None.into(),
+            ..Default::default()
+        };
+
+        EspError::convert(unsafe { uart_param_config(UART::port(), &uart_config) }).unwrap();
+
+        const UART_FIFO_SIZE: i32 = 128;
+        if ! unsafe { uart_is_driver_installed(UART::port()) } {
+            EspError::convert(unsafe {
+                uart_driver_install(
+                    UART::port(),
+                    UART_FIFO_SIZE * 2,
+                    UART_FIFO_SIZE * 2,
+                    0,
+                    core::ptr::null_mut(),
+                    0,
+                )
+            }).unwrap();
+        }
+
         Ok(Self {
-            tx,
-            rx,
+            uart,
+            tx: tx.pin(), 
+            rx: rx.pin(),
             framerate: 100,
             baudrate: 115200,
             output_format: OutputFormat::CM,
@@ -249,9 +216,66 @@ impl<UART: Uart> TFMP<UART> {
         })
     }
 
+    fn save_changes(&mut self) -> Result<Response, TFMPError> {
+        let response = self.send_command(Command::SaveSettings);
+        // Weird behaviour where the save command won't return anything
+        response
+        // match response {
+        //     Err(TFMPError::NoResponse) => Ok(Response::None),
+        //     _ => response
+        // }
+    }
+
+    fn send_command(&mut self, command: Command) -> Result<Response, TFMPError> {
+        // Get command to send
+        let data = command.get_bytes();
+        // Get serial
+        let mut serial = self.get_serial();
+        // Flush read
+        serial.flush_rx()?;
+        // Send the actual data
+        for byte in data {
+            block!(serial.write(byte))?;
+        }
+        block!(serial.flush())?;
+        // Check what the response was
+        let result = command.get_response(&mut serial);
+        // Pause for a bit
+        // FreeRtos.delay_ms(1u32);
+        result
+    }
+
+    fn interpret_data_frame(&self, buf: Vec<u8>) -> Result<(u16, u16, u16, Vec<u8>), TFMPError>  {
+        // Check checksum
+        let checksum = checksum(&buf[..8]);
+        if checksum != buf[8] {
+            return Err(TFMPError::BadChecksum(buf))
+        }
+        // Extraxt values
+        let (dist, strength, temp) = {
+            // Start reading distance data
+            let dist = (buf[2] as u16) | ((buf[3] as u16) << 8);
+            // Next, read Strength
+            let strength = (buf[4] as u16) | ((buf[5] as u16) << 8);
+            // Finally, read and convert temp to Celsius
+            let temp = ((buf[6] as u16) | ((buf[7] as u16) << 8)) / 8 - 256;
+            // Return
+            (dist, strength, temp)
+        };
+        // Return values
+        Ok((dist, strength, temp, buf))
+    }
+
+    pub fn get_serial(&self) -> Serial<UART> {
+        Serial::new(self.uart.lock().unwrap(), self.tx, self.rx)
+    }
+}
+
+// Contains user facing commands
+impl<UART: Uart> TFMP<UART> {
     /// Returns seperated data from sensor in format:
     /// (Distance 0-1200, Strength 0-65535, Temp in Celsius)
-    pub fn read(&mut self) -> Result<(u16, u16, f32, Vec<u8>), TFMPError> {
+    pub fn read(&mut self) -> Result<(u16, u16, u16, Vec<u8>), TFMPError> {
         if self.output_format == OutputFormat::Pixhawk {
             return Err(TFMPError::WrongMethod);
         }
@@ -260,30 +284,16 @@ impl<UART: Uart> TFMP<UART> {
             return Err(TFMPError::OutputDisabled);
         }
         // Get incoming frame
-        let mut i = 0;
-        loop {
-            // Attempt to find first byte
-            for _ in 0..10 { if self.read_byte()? == 0x59 { break }}
-            // Read second magic byte
-            if self.read_byte()? == 0x59 { break };
-            // Increment fail counter if it doesn't work
-            i += 1;
-            if i > 10 {
-                return Err(TFMPError::BadData);
-            }
-        }
-        // We've found the start of a byte
-        // So read all data into an array for checksum checking
-        let mut buf = vec![0x59u8; 9];
-        for i in 2..buf.len() {
-            buf[i] = self.read_byte()?;
-        }
+        let mut serial = self.get_serial();
+        let frame = read_data_frame(&mut serial, &[0x59, 0x59], 9)?;
         // Read data
-        self.read_data_frame(buf)
+        let data = self.interpret_data_frame(frame);
+        data
     }
 
     /// Reads the output of the sensor, if the format is in pixhawk.
-    /// The formating is so different, that this deserves a new function
+    /// The formating is so different, that this needs a new function.
+    /// The returned string has no newline
     pub fn read_pixhawk(&mut self) -> Result<String, TFMPError> {
         if self.output_format != OutputFormat::Pixhawk {
             return Err(TFMPError::WrongMethod);
@@ -292,22 +302,27 @@ impl<UART: Uart> TFMP<UART> {
         if self.output_enabled == false {
             return Err(TFMPError::OutputDisabled);
         }
+        // let time = Instant::now();
         // Create buffer to store upcoming frame
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(6);
         // Sanity check
         let mut i = 0;
+        let mut serial = self.get_serial();
+        // println!("Init Read in {}", time.elapsed().as_micros());
+        // let time = Instant::now();
         // Read until we find 13, 10, which are \r\n for this thing
         while buf.len() < 2 || &buf[buf.len() - 2..] != &['\r' as u8, '\n' as u8] {
-            let byte = self.read_byte()?;
+            let byte = read_byte(&mut serial)?;
             buf.push(byte);
             // Just in case...
             if i > 100 {
                 return Err(TFMPError::BadData);
             }
-            i += 1;
+                i += 1;
         }
-        // Return output
-        Ok(std::str::from_utf8(&buf).unwrap().to_string())
+        // // println!("Read output in {}", time.elapsed().as_micros());
+        // Return output minus the \r\n
+        Ok(String::from_utf8_lossy(&buf[..buf.len() - 2]).to_string())
     }
 
     /// Returns the firmware version of the sensor, in the format (V3, V2, V1) for V3.V2.V1
@@ -327,7 +342,7 @@ impl<UART: Uart> TFMP<UART> {
 
     /// Change the framerate of the sensor. 
     /// Set to zero to make the sensor a oneshot, triggered by the trigger command
-    pub fn change_framerate(&mut self, fps: u16) -> Result<u16, TFMPError> {
+    pub fn set_framerate(&mut self, fps: u16) -> Result<u16, TFMPError> {
         if let Response::Framerate(fps) = self.send_command(Command::FrameRate(fps))? {
             self.save_changes()?;
             self.framerate = fps;
@@ -338,12 +353,12 @@ impl<UART: Uart> TFMP<UART> {
     }
 
     /// Triggers the sensor to capture, given it is in trigger mode (The framerate is zero)
-    pub fn trigger(&mut self) -> Result<(u16, u16, f32, Vec<u8>), TFMPError> {
+    pub fn trigger(&mut self) -> Result<(u16, u16, u16, Vec<u8>), TFMPError> {
         if self.framerate != 0 {
             return Err(TFMPError::NotInTriggerMode);
         }
         if let Response::DataFrame(response) = self.send_command(Command::TriggerDetection)? {
-            let data = self.read_data_frame(response)?;
+            let data = self.interpret_data_frame(response)?;
             Ok(data)
         } else {
             unreachable!()
@@ -352,7 +367,7 @@ impl<UART: Uart> TFMP<UART> {
 
     /// Puts the sensor in trigger mode. The same as setting the framerate to zero
     pub fn into_trigger_mode(&mut self) -> Result<(), TFMPError> {
-        let fps = self.change_framerate(0)?;
+        let fps = self.set_framerate(0)?;
         if fps != 0 {
             Err(TFMPError::CommandFailed)
         } else {
@@ -405,82 +420,162 @@ impl<UART: Uart> TFMP<UART> {
         self.output_format = OutputFormat::CM;
         Ok(())
     }
+}
 
-    fn save_changes(&mut self) -> Result<Response, TFMPError> {
-        let response = self.send_command(Command::SaveSettings);
-        // Weird behaviour where the save command won't return anything
-        response
-        // match response {
-        //     Err(TFMPError::NoResponse) => Ok(Response::None),
-        //     _ => response
-        // }
+
+mod serial_util {
+    use std::char::MAX;
+
+    use super::*;
+    
+    pub struct Serial<'a, UART: Uart> {
+        _uart: MutexGuard<'a, UART>,
     }
-
-    fn send_command(&mut self, command: Command) -> Result<Response, TFMPError> {
-        // Get command to send
-        let data = command.get_bytes();
-        // Flush the read buffer
-        self.flush_read_buffer()?;
-        // Send the actual data
-        for byte in data {
-            block!(self.tx.write(byte))?;
+    
+    impl<'a, UART: Uart> Serial<'a, UART> {
+        pub fn new(uart: MutexGuard<'a, UART>, tx: i32, rx: i32) -> Self {
+            use esp_idf_sys::{uart_read_bytes, uart_flush_input, uart_set_pin};
+    
+            EspError::convert(unsafe {
+                uart_flush_input(UART::port())
+            }).unwrap();
+    
+            EspError::convert(unsafe {
+                uart_set_pin(
+                    UART::port(),
+                    tx,
+                    rx,
+                    -1,
+                    -1,
+                )
+            }).unwrap();
+    
+            let mut buf = [0u8; 10];
+            unsafe { uart_read_bytes(UART::port(), &mut buf as *mut u8 as *mut _, buf.len() as u32, 0) };
+    
+            EspError::convert(unsafe {
+                uart_flush_input(UART::port())
+            }).unwrap();
+            
+            // FreeRtos.delay_us(250u32);
+    
+            Self { _uart: uart }
         }
-        block!(self.tx.flush())?;
-        // Check what the response was
-        let result = command.get_response(&mut self.rx);
-        // Pause for a bit
-        // FreeRtos.delay_ms(1u32);
-        result
-    }
-
-    fn flush_read_buffer(&mut self) -> Result<(), TFMPError> {
-        while self.rx.count().unwrap() > 0 {
-            self.read_byte()?;
+    
+        pub fn flush_rx(&mut self) -> Result<(), EspError> {
+            use esp_idf_sys::uart_flush_input;
+            EspError::convert(unsafe {
+                uart_flush_input(UART::port())
+            })
         }
-        Ok(())
-    }
 
-    fn read_data_frame(&mut self, buf: Vec<u8>) -> Result<(u16, u16, f32, Vec<u8>), TFMPError>  {
-        // Check checksum
-        let checksum = checksum(&buf[..8]);
-        if checksum != buf[8] {
-            return Err(TFMPError::BadChecksum(buf))
+        pub fn read(&mut self) -> nb::Result<u8, SerialError> {
+            use esp_idf_sys::{ESP_ERR_INVALID_STATE, uart_read_bytes};
+            
+            // Code copied from esp_idf_hal::serial::Rx::read
+            let mut buf: u8 = 0;
+    
+            // uart_read_bytes() returns error (-1) or how many bytes were read out
+            // 0 means timeout and nothing is yet read out
+            match unsafe { uart_read_bytes(UART::port(), &mut buf as *mut u8 as *mut _, 1, 0) } {
+                1 => Ok(buf),
+                0 => Err(nb::Error::WouldBlock),
+                _ => Err(nb::Error::Other(SerialError::other(
+                    EspError::from(ESP_ERR_INVALID_STATE).unwrap(),
+                ))),
+            }
         }
-        // Extraxt values
-        let (dist, strength, temp) = {
-            // Start reading distance data
-            let dist = (buf[2] as u16) | ((buf[3] as u16) << 8);
-            // Next, read Strength
-            let strength = (buf[4] as u16) | ((buf[5] as u16) << 8);
-            // Finally, read and convert temp to Celsius
-            let temp = ((buf[6] as u16) | ((buf[7] as u16) << 8)) as f32 / 8. - 256.;
-            // Return
-            (dist, strength, temp)
-        };
-        // Return values
-        Ok((dist, strength, temp, buf))
+    
+        pub fn count(&self) -> Result<u8, EspError> {
+            use esp_idf_sys::{uart_get_buffered_data_len};
+    
+            // Code copied from esp_idf_hal::serial::Rx::count
+            let mut size = 0_u32;
+    
+            EspError::check_and_return(
+                unsafe { uart_get_buffered_data_len(UART::port(), &mut size) },
+                size as u8
+            )
+        }
+    
+        pub fn flush(&mut self) -> nb::Result<(), SerialError> {
+            use esp_idf_sys::{ESP_OK, ESP_ERR_TIMEOUT, uart_wait_tx_done, ESP_ERR_INVALID_STATE};
+    
+            // Code copied from esp_idf_hal::serial::Tx::flush
+            match unsafe { uart_wait_tx_done(UART::port(), 0) } {
+                ESP_OK => Ok(()),
+                ESP_ERR_TIMEOUT => Err(nb::Error::WouldBlock),
+                _ => Err(nb::Error::Other(SerialError::other(
+                    EspError::from(ESP_ERR_INVALID_STATE).unwrap(),
+                ))),
+            }
+        }
+    
+        pub fn write(&mut self, byte: u8) -> nb::Result<(), SerialError> {
+            use esp_idf_sys::{uart_write_bytes, ESP_ERR_INVALID_STATE};
+    
+            // Code copied from esp_idf_hal::serial::Tx::flush
+            // `uart_write_bytes()` returns error (-1) or how many bytes were written
+            match unsafe { uart_write_bytes(UART::port(), &byte as *const u8 as *const _, 1) } {
+                1 => Ok(()),
+                _ => Err(nb::Error::Other(SerialError::other(
+                    EspError::from(ESP_ERR_INVALID_STATE).unwrap(),
+                ))),
+            }
+        }
+    }
+    
+
+    pub fn read_data_frame(serial: &mut Serial<impl Uart>, pattern: &[u8], len: usize) -> Result<Vec<u8>, TFMPError> {
+        // Attempt to find pattern
+        let mut i = 0;
+        const MAX_ITER: i32 = 20;
+        'attempting: loop {
+            i += 1;
+            if i >= MAX_ITER {
+                return Err(TFMPError::NoResponse);
+            }
+            // Go through all bytes in pattern, and try again if any don't match
+            for &byte in pattern {
+                if read_byte(serial)? != byte {
+                    continue 'attempting;
+                }
+            }
+            // We found all of the pattern bytes,
+            // so continue through the program.
+            break 'attempting;
+        }
+
+        // We've found the start of a pattern
+        // So read all data into an array
+        let mut buf = Vec::from(pattern);
+        for _ in buf.len()..len {
+            buf.push(read_byte(serial)?);
+        }
+        Ok(buf)
     }
 
-    pub fn read_byte(&mut self) -> Result<u8, TFMPError> {
+    pub fn read_byte(serial: &mut Serial<impl Uart>) -> Result<u8, TFMPError> {
         let byte = {
             let mut i = 1;
-            loop {
-                match self.rx.read() {
+            let b = loop {
+                match serial.read() {
                     Ok(val) => break val,
                     Err(Error::WouldBlock) => {},
                     Err(Error::Other(err)) => return Err(err.into()),
                 }
                 i += 1;
-                if i >= 1000 {
+                if i >= TIMEOUT * 100 {
                     return Err(TFMPError::NoResponse);
                 }
-                FreeRtos.delay_ms(1u32);
-            }
+                FreeRtos.delay_us(10u32);
+            };
+            b
         };
         Ok(byte)
     }
-}
-
-fn checksum(buf: &[u8]) -> u8 {
-    buf.iter().fold(0, |acc, x| acc.wrapping_add(*x))
+    
+    pub fn checksum(buf: &[u8]) -> u8 {
+        buf.iter().fold(0, |acc, x| acc.wrapping_add(*x))
+    }
 }

@@ -1,10 +1,12 @@
+#![feature(generic_arg_infer)]
+use std::sync::{Mutex, Arc};
 use std::time::Instant;
 
+use embedded_hal::prelude::_embedded_hal_blocking_delay_DelayMs;
 use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
-use esp_idf_hal::prelude::*;
-use esp_idf_hal::{serial, serial::{Uart, UART1}};
-use esp_idf_hal::gpio::{InputPin, OutputPin};
-use tfmini_plus::TFMPError;
+use esp_idf_hal::{prelude::*, delay::FreeRtos};
+use esp_idf_hal::serial::Uart;
+use tfmini_plus::{TFMPError, TFMP};
 
 use crate::tfmini_plus::OutputFormat;
 
@@ -18,50 +20,81 @@ fn main() {
     let peripherals = Peripherals::take().unwrap();
     let pins = peripherals.pins;
 
-    let config = serial::config::Config::default().baudrate(Hertz(115_200));
+    let uart = Arc::new(Mutex::new(peripherals.uart1));
 
-    let sensor_pins = [(pins.gpio25, pins.gpio26)];
-
-    let mut tfmps = vec![];
-
-    for (white, green) in sensor_pins {
-        let uart = unsafe { UART1::new() };
-        let sensor_serial: serial::Serial<serial::UART1, _, _> = serial::Serial::new(
-            uart,
-            serial::Pins {
-                tx: white,
-                rx: green,
-                cts: None,
-                rts: None,
-            },
-            config
-        ).unwrap();
-        let tfmp = tfmini_plus::TFMP::new(sensor_serial).unwrap();
-
-        tfmps.push(tfmp);
-    }
+    // Tx: white, Rx: green
+    let mut tfmps = [
+        TFMP::new(uart.clone(), pins.gpio12, pins.gpio14).unwrap(),
+        TFMP::new(uart.clone(), pins.gpio25, pins.gpio33).unwrap(),
+        TFMP::new(uart.clone(), pins.gpio27, pins.gpio26).unwrap(),
+    ];
 
     for tfmp in &mut tfmps {
         init_tfmp(tfmp).unwrap();
     }
 
+
     loop {
+        let time = std::time::Instant::now();
+
+        print_pretty_output(&mut tfmps);
+        
+        FreeRtos.delay_ms(1u32);
+        let fps = (1_000 * 1_000) / (match time.elapsed().as_micros() { 0 => 1, o => o });
+        println!("\tFPS: {fps}");
+    }
+}
+
+fn fps_test(tfmps: &mut [tfmini_plus::TFMP<impl Uart>]) -> () {
+    let mut max_fps = 0;
+    let mut max_rate = 0;
+    const ITERS: u128 = 100;
+
+    for rate in (300..501).step_by(10) {
+        for tfmp in tfmps.iter_mut() {
+            while let Err(_) = tfmp.set_framerate(rate) {};
+        }
         let time = Instant::now();
-        let result = tfmps[0].trigger();
+        for _ in 0..ITERS {
+            for tfmp in tfmps.iter_mut() {
+                while let Err(_) = tfmp.read() {};
+            }
+        }
+        let fps = (1_000 * 1_000 * ITERS) / (match time.elapsed().as_micros() { 0 => 1, o => o });
+        if fps > max_fps {
+            max_fps = fps;
+            max_rate = rate;
+        }
+        println!("Rate {rate} has fps {fps}");
+        FreeRtos.delay_ms(1u32);
+    }
+    println!("Max FPS ({max_fps}) at rate {max_rate}");
+}
+
+fn print_pretty_output(tfmps: &mut [tfmini_plus::TFMP<impl Uart>]) -> () {
+    for (i, tfmp) in tfmps.iter_mut().enumerate() {
+        print!("TFMP {i}: ");
+        let latency = std::time::Instant::now();
+        let result = tfmp.read();
+        // let result = tfmp.read_pixhawk();
+        print!("Latency: {}    ", latency.elapsed().as_micros());
         if let Ok((dist, strength, temp, _)) = result {
             print!("Data: {dist}, {strength}, {temp}")
+        // if let Ok(s) = result {
+        //     print!("{s}")
         } else {
             print!("Error: {result:?}")
         }
-        let fps = 1000 / time.elapsed().as_millis();
-        println!("\tFPS: {}", fps);
+        print!("\t");
     }
 }
 
 fn init_tfmp<UART: Uart>(tfmp: &mut tfmini_plus::TFMP<UART>) -> Result<(), TFMPError> {
     let (a, b, c) = tfmp.get_firmware_version()?;
     println!("Firmware: {a}.{b}.{c}");
-    tfmp.into_trigger_mode()?;
-    tfmp.set_output_format(OutputFormat::MM)?;
+    // 500 Works best for some reason, any lower is suboptimal, and any higher ruins it
+    tfmp.set_framerate(500)?;
+    // tfmp.into_trigger_mode()?;
+    tfmp.set_output_format(OutputFormat::CM)?;
     Ok(())
 }
