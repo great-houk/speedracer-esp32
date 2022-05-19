@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 use std::sync::{Mutex, Arc, MutexGuard};
-use std::time::Instant;
-// use std::time::Instant;
 use esp_idf_hal::serial::config::{FlowControl, StopBits, Parity, DataBits};
 use esp_idf_hal::serial::{Uart, SerialError};
 use esp_idf_hal::gpio::{InputPin, OutputPin};
@@ -424,8 +422,6 @@ impl<UART: Uart> TFMP<UART> {
 
 
 mod serial_util {
-    use std::char::MAX;
-
     use super::*;
     
     pub struct Serial<'a, UART: Uart> {
