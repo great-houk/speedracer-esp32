@@ -24,9 +24,9 @@ fn main() {
 
     // Tx: white, Rx: green
     let mut tfmps = [
-        TFMP::new(uart.clone(), pins.gpio12, pins.gpio14).unwrap(),
-        TFMP::new(uart.clone(), pins.gpio25, pins.gpio33).unwrap(),
-        TFMP::new(uart.clone(), pins.gpio27, pins.gpio26).unwrap(),
+        TFMP::new(uart.clone(), pins.gpio18, pins.gpio5).unwrap(), // Left
+        TFMP::new(uart.clone(), pins.gpio16, pins.gpio17).unwrap(), // Right
+        TFMP::new(uart.clone(), pins.gpio23, pins.gpio22).unwrap(), // Front
     ];
 
     for tfmp in &mut tfmps {
@@ -38,6 +38,7 @@ fn main() {
 
         print_pretty_output(&mut tfmps);
 
+        // So that watchdog doesn't get triggered
         FreeRtos.delay_ms(1u32);
         let fps = (1_000 * 1_000)
             / (match time.elapsed().as_micros() {
