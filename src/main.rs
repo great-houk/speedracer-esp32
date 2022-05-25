@@ -43,13 +43,13 @@ fn main() {
     // Set up steering
     // ---------------
 
-    let mut steering_servo = Servo::new(peripherals.ledc.timer0, peripherals.ledc.channel0, pins.gpio27).unwrap();
+    let mut steering_servo = Servo::new(peripherals.ledc.timer0, peripherals.ledc.channel0, pins.gpio32).unwrap();
     
     // ------------
     // Set up motor
     // ------------
     
-    let mut motor = Servo::new(peripherals.ledc.timer1, peripherals.ledc.channel1, pins.gpio32).unwrap();
+    let mut motor = Servo::new(peripherals.ledc.timer1, peripherals.ledc.channel1, pins.gpio26).unwrap();
     
 
     // Testing
@@ -60,18 +60,14 @@ fn main() {
     loop {
         let time = std::time::Instant::now();
 
-        steering_servo.set_us(len).unwrap();
-        motor.set_us(len).unwrap();
-        len += 1;
-        if len > 2000 {
-            len = 1000;
-        }
-        print!("Servo Pulse Length: {len}us");
+        // Go forward slowlyish
+        steering_servo.set_us(1500).unwrap();
+        motor.set_us(1564).unwrap();
 
         // print_pretty_output(&mut tfmps);
 
         // So that watchdog doesn't get triggered
-        FreeRtos.delay_ms(10u32);
+        FreeRtos.delay_ms(1u32);
         let fps = (1_000 * 1_000)
             / (match time.elapsed().as_micros() {
                 0 => 1,
