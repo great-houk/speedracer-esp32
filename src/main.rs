@@ -5,12 +5,14 @@ use std::time::Instant;
 use embedded_hal::prelude::_embedded_hal_blocking_delay_DelayMs;
 use esp_idf_hal::serial::Uart;
 use esp_idf_hal::{delay::FreeRtos, prelude::*};
-use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
+use esp_idf_sys as _; use servo::Servo;
+// If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
 use tfmini_plus::{TFMPError, TFMP};
 
 use crate::tfmini_plus::OutputFormat;
 
 mod tfmini_plus;
+mod servo;
 
 fn main() {
     // Temporary. Will disappear once ESP-IDF 4.4 is released, but for now it is necessary to call this function once,
@@ -20,26 +22,56 @@ fn main() {
     let peripherals = Peripherals::take().unwrap();
     let pins = peripherals.pins;
 
-    let uart = Arc::new(Mutex::new(peripherals.uart1));
+    // --------------
+    // Set up sensors
+    // --------------
+    
+    // let uart = Arc::new(Mutex::new(peripherals.uart1));
 
-    // Tx: white, Rx: green
-    let mut tfmps = [
-        TFMP::new(uart.clone(), pins.gpio18, pins.gpio5).unwrap(), // Left
-        TFMP::new(uart.clone(), pins.gpio16, pins.gpio17).unwrap(), // Right
-        TFMP::new(uart.clone(), pins.gpio23, pins.gpio22).unwrap(), // Front
-    ];
+    // // Tx: white, Rx: green
+    // let mut tfmps = [
+    //     TFMP::new(uart.clone(), pins.gpio18, pins.gpio5).unwrap(), // Left
+    //     TFMP::new(uart.clone(), pins.gpio16, pins.gpio17).unwrap(), // Right
+    //     TFMP::new(uart.clone(), pins.gpio23, pins.gpio22).unwrap(), // Front
+    // ];
 
-    for tfmp in &mut tfmps {
-        init_tfmp(tfmp).unwrap();
-    }
+    // for tfmp in &mut tfmps {
+    //     init_tfmp(tfmp).unwrap();
+    // }
+
+    // ---------------
+    // Set up steering
+    // ---------------
+
+    let mut steering_servo = Servo::new(peripherals.ledc.timer0, peripherals.ledc.channel0, pins.gpio27).unwrap();
+    
+    // ------------
+    // Set up motor
+    // ------------
+    
+    let mut motor = Servo::new(peripherals.ledc.timer1, peripherals.ledc.channel1, pins.gpio32).unwrap();
+    
+
+    // Testing
+    //---------
+    let mut len = 1000;
+
 
     loop {
         let time = std::time::Instant::now();
 
-        print_pretty_output(&mut tfmps);
+        steering_servo.set_us(len).unwrap();
+        motor.set_us(len).unwrap();
+        len += 1;
+        if len > 2000 {
+            len = 1000;
+        }
+        print!("Servo Pulse Length: {len}us");
+
+        // print_pretty_output(&mut tfmps);
 
         // So that watchdog doesn't get triggered
-        FreeRtos.delay_ms(1u32);
+        FreeRtos.delay_ms(10u32);
         let fps = (1_000 * 1_000)
             / (match time.elapsed().as_micros() {
                 0 => 1,
