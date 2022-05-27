@@ -26,18 +26,18 @@ fn main() {
     // Set up sensors
     // --------------
     
-    // let uart = Arc::new(Mutex::new(peripherals.uart1));
+    let uart = Arc::new(Mutex::new(peripherals.uart1));
 
-    // // Tx: white, Rx: green
-    // let mut tfmps = [
-    //     TFMP::new(uart.clone(), pins.gpio18, pins.gpio5).unwrap(), // Left
-    //     TFMP::new(uart.clone(), pins.gpio16, pins.gpio17).unwrap(), // Right
-    //     TFMP::new(uart.clone(), pins.gpio23, pins.gpio22).unwrap(), // Front
-    // ];
+    // Tx: white, Rx: green
+    let mut tfmps = [
+        TFMP::new(uart.clone(), pins.gpio18, pins.gpio5).unwrap(), // Left
+        TFMP::new(uart.clone(), pins.gpio16, pins.gpio17).unwrap(), // Right
+        TFMP::new(uart.clone(), pins.gpio23, pins.gpio22).unwrap(), // Front
+    ];
 
-    // for tfmp in &mut tfmps {
-    //     init_tfmp(tfmp).unwrap();
-    // }
+    for tfmp in &mut tfmps {
+        init_tfmp(tfmp).unwrap();
+    }
 
     // ---------------
     // Set up steering
@@ -54,26 +54,30 @@ fn main() {
 
     // Testing
     //---------
-    let mut len = 1000;
+    let mut last_l = (0, 0, 0, vec![]);
+    let mut last_r = (0, 0, 0, vec![]);
+    let mut last_f = (0, 0, 0, vec![]);
 
 
     loop {
-        let time = std::time::Instant::now();
+        // let time = std::time::Instant::now();
 
         // Go forward slowlyish
         steering_servo.set_us(1500).unwrap();
         motor.set_us(1564).unwrap();
 
         // print_pretty_output(&mut tfmps);
+        [last_l, last_r, last_f] = read_sensors(tfmps).unwrap();
+
 
         // So that watchdog doesn't get triggered
         FreeRtos.delay_ms(1u32);
-        let fps = (1_000 * 1_000)
-            / (match time.elapsed().as_micros() {
-                0 => 1,
-                o => o,
-            });
-        println!("\tFPS: {fps}");
+        // let fps = (1_000 * 1_000)
+        //     / (match time.elapsed().as_micros() {
+        //         0 => 1,
+        //         o => o,
+        //     });
+        // println!("\tFPS: {fps}");
     }
 }
 
@@ -123,6 +127,14 @@ fn print_pretty_output(tfmps: &mut [tfmini_plus::TFMP<impl Uart>]) -> () {
         }
         print!("\t");
     }
+}
+
+fn read_sensors<const S>(sensors: &[TFMP; S]) -> [(u16, u16, u16, Vec<u8>); S] {
+    let mut rets = [_; S];
+    for (i, tfmp) in sensors.iter().enumerate() {
+        rets[i] = tfmp.read().unwrap();
+    }
+    rets
 }
 
 fn init_tfmp<UART: Uart>(tfmp: &mut tfmini_plus::TFMP<UART>) -> Result<(), TFMPError> {
