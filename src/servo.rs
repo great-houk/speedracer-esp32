@@ -1,8 +1,11 @@
 #![allow(dead_code)]
 use std::rc::Rc;
 
-use esp_idf_hal::{gpio::OutputPin, ledc::{HwTimer, HwChannel, config::TimerConfig, Timer, Channel}};
 use esp_idf_hal::prelude::*;
+use esp_idf_hal::{
+    gpio::OutputPin,
+    ledc::{config::TimerConfig, Channel, HwChannel, HwTimer, Timer},
+};
 use esp_idf_sys::EspError;
 
 type Duty = u32;
@@ -33,15 +36,14 @@ pub struct Servo<C: HwChannel, H: HwTimer, P: OutputPin> {
 
 impl<C: HwChannel, H: HwTimer, P: OutputPin> Servo<C, H, P> {
     pub fn new(timer: H, channel: C, pin: P) -> Result<Self, ServoError> {
-        let config = TimerConfig::default().frequency(FREQ.Hz().into()).resolution(esp_idf_hal::ledc::Resolution::Bits15);
+        let config = TimerConfig::default()
+            .frequency(FREQ.Hz().into())
+            .resolution(esp_idf_hal::ledc::Resolution::Bits15);
         let timer = Rc::new(Timer::new(timer, &config)?);
         let mut channel = Channel::new(channel, timer, pin)?;
         let duty = Self::from_degrees(0, &channel)?;
         channel.set_duty(duty)?;
-        Ok(Self {
-            channel,
-            duty,
-        })
+        Ok(Self { channel, duty })
     }
 
     pub fn get_pulse_len(&self) -> u32 {
@@ -73,7 +75,10 @@ impl<C: HwChannel, H: HwTimer, P: OutputPin> Servo<C, H, P> {
         angle.round() as i32
     }
 
-    fn from_degrees(angle: i32, channel: &Channel<C, H, Rc<Timer<H>>, P>) -> Result<Duty, ServoError> {
+    fn from_degrees(
+        angle: i32,
+        channel: &Channel<C, H, Rc<Timer<H>>, P>,
+    ) -> Result<Duty, ServoError> {
         if angle > MAX_ANGLE || angle < -MAX_ANGLE {
             return Err(ServoError::BadAngle);
         }

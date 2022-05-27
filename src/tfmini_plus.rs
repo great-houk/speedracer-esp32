@@ -13,6 +13,36 @@ type MilliSeconds = u32;
 const TIMEOUT: MilliSeconds = 250;
 
 #[derive(Debug, PartialEq, Clone)]
+pub struct FrameData {
+    pub dist: u16,
+    pub strength: u16,
+    pub temp: u16,
+    pub raw: Vec<u8>,
+}
+
+impl Default for FrameData {
+    fn default() -> Self {
+        Self {
+            dist: 0,
+            strength: 0,
+            temp: 0,
+            raw: vec![],
+        }
+    }
+}
+
+impl From<(u16, u16, u16, Vec<u8>)> for FrameData {
+    fn from((dist, strength, temp, raw): (u16, u16, u16, Vec<u8>)) -> Self {
+        Self {
+            dist,
+            strength,
+            temp,
+            raw,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub enum OutputFormat {
     CM,
     MM,
@@ -276,7 +306,7 @@ impl<UART: Uart> TFMP<UART> {
         result
     }
 
-    fn interpret_data_frame(&self, buf: Vec<u8>) -> Result<(u16, u16, u16, Vec<u8>), TFMPError> {
+    fn interpret_data_frame(&self, buf: Vec<u8>) -> Result<FrameData, TFMPError> {
         // Check checksum
         let checksum = checksum(&buf[..8]);
         if checksum != buf[8] {
@@ -294,7 +324,7 @@ impl<UART: Uart> TFMP<UART> {
             (dist, strength, temp)
         };
         // Return values
-        Ok((dist, strength, temp, buf))
+        Ok((dist, strength, temp, buf).into())
     }
 
     pub fn get_serial(&self) -> Serial<UART> {
@@ -306,7 +336,7 @@ impl<UART: Uart> TFMP<UART> {
 impl<UART: Uart> TFMP<UART> {
     /// Returns seperated data from sensor in format:
     /// (Distance 0-1200, Strength 0-65535, Temp in Celsius)
-    pub fn read(&mut self) -> Result<(u16, u16, u16, Vec<u8>), TFMPError> {
+    pub fn read(&mut self) -> Result<FrameData, TFMPError> {
         if self.output_format == OutputFormat::Pixhawk {
             return Err(TFMPError::WrongMethod);
         }
@@ -384,7 +414,7 @@ impl<UART: Uart> TFMP<UART> {
     }
 
     /// Triggers the sensor to capture, given it is in trigger mode (The framerate is zero)
-    pub fn trigger(&mut self) -> Result<(u16, u16, u16, Vec<u8>), TFMPError> {
+    pub fn trigger(&mut self) -> Result<FrameData, TFMPError> {
         if self.framerate != 0 {
             return Err(TFMPError::NotInTriggerMode);
         }

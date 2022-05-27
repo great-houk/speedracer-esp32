@@ -5,14 +5,15 @@ use std::time::Instant;
 use embedded_hal::prelude::_embedded_hal_blocking_delay_DelayMs;
 use esp_idf_hal::serial::Uart;
 use esp_idf_hal::{delay::FreeRtos, prelude::*};
-use esp_idf_sys as _; use servo::Servo;
+use esp_idf_sys as _;
+use servo::Servo;
 // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
 use tfmini_plus::{TFMPError, TFMP};
 
-use crate::tfmini_plus::OutputFormat;
+use crate::tfmini_plus::{FrameData, OutputFormat};
 
-mod tfmini_plus;
 mod servo;
+mod tfmini_plus;
 
 fn main() {
     // Temporary. Will disappear once ESP-IDF 4.4 is released, but for now it is necessary to call this function once,
@@ -25,7 +26,7 @@ fn main() {
     // --------------
     // Set up sensors
     // --------------
-    
+
     let uart = Arc::new(Mutex::new(peripherals.uart1));
 
     // Tx: white, Rx: green
@@ -43,21 +44,27 @@ fn main() {
     // Set up steering
     // ---------------
 
-    let mut steering_servo = Servo::new(peripherals.ledc.timer0, peripherals.ledc.channel0, pins.gpio32).unwrap();
-    
+    let mut steering_servo = Servo::new(
+        peripherals.ledc.timer0,
+        peripherals.ledc.channel0,
+        pins.gpio32,
+    )
+    .unwrap();
+
     // ------------
     // Set up motor
     // ------------
-    
-    let mut motor = Servo::new(peripherals.ledc.timer1, peripherals.ledc.channel1, pins.gpio26).unwrap();
-    
 
-    // Testing
-    //---------
-    let mut last_l = (0, 0, 0, vec![]);
-    let mut last_r = (0, 0, 0, vec![]);
-    let mut last_f = (0, 0, 0, vec![]);
+    let mut motor = Servo::new(
+        peripherals.ledc.timer1,
+        peripherals.ledc.channel1,
+        pins.gpio26,
+    )
+    .unwrap();
 
+    // ---------------
+    // Start Main Loop
+    // ---------------
 
     loop {
         // let time = std::time::Instant::now();
@@ -67,8 +74,15 @@ fn main() {
         motor.set_us(1564).unwrap();
 
         // print_pretty_output(&mut tfmps);
-        [last_l, last_r, last_f] = read_sensors(tfmps).unwrap();
 
+        // Read current
+        let curr_l = tfmps[0].read().unwrap();
+        let curr_r = tfmps[1].read().unwrap();
+        let curr_f = tfmps[2].read().unwrap();
+
+        // Do logic
+        set_steering(curr_l, curr_r, curr_f).unwrap();
+        set_speed(curr_l, curr_r, curr_f).unwrap();
 
         // So that watchdog doesn't get triggered
         FreeRtos.delay_ms(1u32);
@@ -118,7 +132,13 @@ fn print_pretty_output(tfmps: &mut [tfmini_plus::TFMP<impl Uart>]) -> () {
         let result = tfmp.read();
         // let result = tfmp.read_pixhawk();
         print!("Latency: {}    ", latency.elapsed().as_micros());
-        if let Ok((dist, strength, temp, _)) = result {
+        if let Ok(FrameData {
+            dist,
+            strength,
+            temp,
+            ..
+        }) = result
+        {
             print!("Data: {dist}, {strength}, {temp}")
         // if let Ok(s) = result {
         //     print!("{s}")
@@ -127,14 +147,6 @@ fn print_pretty_output(tfmps: &mut [tfmini_plus::TFMP<impl Uart>]) -> () {
         }
         print!("\t");
     }
-}
-
-fn read_sensors<const S>(sensors: &[TFMP; S]) -> [(u16, u16, u16, Vec<u8>); S] {
-    let mut rets = [_; S];
-    for (i, tfmp) in sensors.iter().enumerate() {
-        rets[i] = tfmp.read().unwrap();
-    }
-    rets
 }
 
 fn init_tfmp<UART: Uart>(tfmp: &mut tfmini_plus::TFMP<UART>) -> Result<(), TFMPError> {
