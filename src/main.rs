@@ -5,8 +5,12 @@ use std::time::Instant;
 use embedded_hal::prelude::_embedded_hal_blocking_delay_DelayMs;
 use esp_idf_hal::serial::Uart;
 use esp_idf_hal::{delay::FreeRtos, prelude::*};
+use esp_idf_hal::{
+    gpio::OutputPin,
+    ledc::{HwChannel, HwTimer},
+};
 use esp_idf_sys as _;
-use servo::Servo;
+use servo::{ServoError, Servo};
 // If using the `binstart` feature of `esp-idf-sys`, always keep this module imported
 use tfmini_plus::{TFMPError, TFMP};
 
@@ -14,6 +18,8 @@ use crate::tfmini_plus::{FrameData, OutputFormat};
 
 mod servo;
 mod tfmini_plus;
+
+const REVERSE_DIST: u16 = 35;
 
 fn main() {
     // Temporary. Will disappear once ESP-IDF 4.4 is released, but for now it is necessary to call this function once,
@@ -69,20 +75,18 @@ fn main() {
     loop {
         // let time = std::time::Instant::now();
 
-        // Go forward slowlyish
-        steering_servo.set_us(1500).unwrap();
-        motor.set_us(1564).unwrap();
-
         // print_pretty_output(&mut tfmps);
 
         // Read current
-        let curr_l = tfmps[0].read().unwrap();
-        let curr_r = tfmps[1].read().unwrap();
-        let curr_f = tfmps[2].read().unwrap();
+        let curr_l = if let Ok(val) = tfmps[0].read() { val } else { continue };//.unwrap();
+        let curr_r = if let Ok(val) = tfmps[1].read() { val } else { continue };//.unwrap();
+        let curr_f = if let Ok(val) = tfmps[2].read() { val } else { continue };//.unwrap();
+
+        // println!("Output:\n\tLeft: {curr_l:?}\n\tRight: {curr_r:?}\n\tFront: {curr_f:?}");
 
         // Do logic
-        set_steering(curr_l, curr_r, curr_f).unwrap();
-        set_speed(curr_l, curr_r, curr_f).unwrap();
+        set_steering(&mut steering_servo, &curr_l, &curr_r, &curr_f);//.unwrap();
+        set_speed(&mut motor, &curr_l, &curr_r, &curr_f);//.unwrap();
 
         // So that watchdog doesn't get triggered
         FreeRtos.delay_ms(1u32);
@@ -93,6 +97,48 @@ fn main() {
         //     });
         // println!("\tFPS: {fps}");
     }
+}
+
+fn set_steering<C: HwChannel, H: HwTimer, P: OutputPin>(steering_servo: &mut Servo<C, H, P>, left: &FrameData, right: &FrameData, front: &FrameData) -> Result<(), ServoError> {
+    let target_dist = 30.;
+    // Divide and square to increase effects of longer distances
+    let left_dist = left.dist as f32 / target_dist;
+    let left_dist = left_dist * left_dist;
+    let right_dist = right.dist as f32 / target_dist;
+    let right_dist = right_dist * right_dist;
+
+    let front_dist = front.dist;
+    
+    let center = 10.;
+    let left_bias = center - 90.;
+    let right_bias = center + 90.;
+
+    let mut avg_bias = (left_bias * left_dist + right_bias * right_dist) / (left_dist + right_dist);
+
+    if front_dist < REVERSE_DIST {
+        avg_bias = center - (avg_bias - center);
+    }
+
+    let avg_bias = avg_bias.min(90.).max(-90.).round() as i32;
+
+    println!("Angle: {avg_bias}");
+
+    steering_servo.set_degrees(avg_bias)
+}
+
+fn set_speed<C: HwChannel, H: HwTimer, P: OutputPin>(motor: &mut Servo<C, H, P>, _left: &FrameData, _right: &FrameData, front: &FrameData) -> Result<(), ServoError> {
+    let min_forward = 1565;
+    let min_reverse = 1380;
+    let front_dist = front.dist;
+    let set_speed;
+
+    if front_dist < REVERSE_DIST {
+        set_speed = min_reverse;
+    } else {
+        set_speed = min_forward;
+    }
+
+    motor.set_us(set_speed)
 }
 
 fn fps_test(tfmps: &mut [tfmini_plus::TFMP<impl Uart>]) -> () {
