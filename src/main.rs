@@ -20,6 +20,9 @@ mod servo;
 mod tfmini_plus;
 
 const REVERSE_DIST: u16 = 35;
+const MIN_FORWARD: u32 = 1565;
+const MAX_FORWARD: u32 = 1630;
+const MIN_REVERSE: u32 = 1350;
 
 fn main() {
     // Temporary. Will disappear once ESP-IDF 4.4 is released, but for now it is necessary to call this function once,
@@ -100,7 +103,7 @@ fn main() {
 }
 
 fn set_steering<C: HwChannel, H: HwTimer, P: OutputPin>(steering_servo: &mut Servo<C, H, P>, left: &FrameData, right: &FrameData, front: &FrameData) -> Result<(), ServoError> {
-    let target_dist = 30.;
+    let target_dist = 40.;
     // Divide and square to increase effects of longer distances
     let left_dist = left.dist as f32 / target_dist;
     let left_dist = left_dist * left_dist;
@@ -126,19 +129,31 @@ fn set_steering<C: HwChannel, H: HwTimer, P: OutputPin>(steering_servo: &mut Ser
     steering_servo.set_degrees(avg_bias)
 }
 
-fn set_speed<C: HwChannel, H: HwTimer, P: OutputPin>(motor: &mut Servo<C, H, P>, _left: &FrameData, _right: &FrameData, front: &FrameData) -> Result<(), ServoError> {
-    let min_forward = 1565;
-    let min_reverse = 1380;
+fn set_speed<C: HwChannel, H: HwTimer, P: OutputPin>(motor: &mut Servo<C, H, P>, left: &FrameData, right: &FrameData, front: &FrameData) -> Result<(), ServoError> {
     let front_dist = front.dist;
+    let left_dist = left.dist;
+    let right_dist = right.dist;
+    let avg_dist = (front_dist + right_dist + left_dist) / 3;
+
     let set_speed;
 
     if front_dist < REVERSE_DIST {
-        set_speed = min_reverse;
+        set_speed = MIN_REVERSE;
     } else {
-        set_speed = min_forward;
+        set_speed = speed_calc(avg_dist);
     }
 
     motor.set_us(set_speed)
+}
+
+fn speed_calc(dist: u16) -> u32 {
+    let mult = 0.2;
+    let mut x = dist as f32 - REVERSE_DIST as f32;
+    if x < 0. {
+        x = 0.;
+    }
+    let speed = (mult * x).round() as u32;
+    u32::min(MAX_FORWARD, MIN_FORWARD + speed)
 }
 
 fn fps_test(tfmps: &mut [tfmini_plus::TFMP<impl Uart>]) -> () {
