@@ -21,7 +21,8 @@ mod tfmini_plus;
 
 const REVERSE_DIST: u16 = 35;
 const MIN_FORWARD: u32 = 1565;
-const MAX_FORWARD: u32 = 1630;
+// Set this to min forward to make tight corners
+const MAX_FORWARD: u32 = 1580;
 const MIN_REVERSE: u32 = 1350;
 
 fn main() {
@@ -75,6 +76,8 @@ fn main() {
     // Start Main Loop
     // ---------------
 
+    let mut curr_angle = 0;
+
     loop {
         // let time = std::time::Instant::now();
 
@@ -88,8 +91,10 @@ fn main() {
         // println!("Output:\n\tLeft: {curr_l:?}\n\tRight: {curr_r:?}\n\tFront: {curr_f:?}");
 
         // Do logic
-        set_steering(&mut steering_servo, &curr_l, &curr_r, &curr_f);//.unwrap();
-        set_speed(&mut motor, &curr_l, &curr_r, &curr_f);//.unwrap();
+        if let Ok(angle) = set_steering(&mut steering_servo, &curr_l, &curr_r, &curr_f) {
+            curr_angle = angle;
+        }
+        set_speed(&mut motor, &curr_f, curr_angle);//.unwrap();
 
         // So that watchdog doesn't get triggered
         FreeRtos.delay_ms(1u32);
@@ -102,7 +107,7 @@ fn main() {
     }
 }
 
-fn set_steering<C: HwChannel, H: HwTimer, P: OutputPin>(steering_servo: &mut Servo<C, H, P>, left: &FrameData, right: &FrameData, front: &FrameData) -> Result<(), ServoError> {
+fn set_steering<C: HwChannel, H: HwTimer, P: OutputPin>(steering_servo: &mut Servo<C, H, P>, left: &FrameData, right: &FrameData, front: &FrameData) -> Result<i32, ServoError> {
     let target_dist = 40.;
     // Divide and square to increase effects of longer distances
     let left_dist = left.dist as f32 / target_dist;
@@ -124,36 +129,36 @@ fn set_steering<C: HwChannel, H: HwTimer, P: OutputPin>(steering_servo: &mut Ser
 
     let avg_bias = avg_bias.min(90.).max(-90.).round() as i32;
 
-    println!("Angle: {avg_bias}");
+    // println!("Angle: {avg_bias}");
 
-    steering_servo.set_degrees(avg_bias)
+    steering_servo.set_degrees(avg_bias);
+    Ok(avg_bias)
 }
 
-fn set_speed<C: HwChannel, H: HwTimer, P: OutputPin>(motor: &mut Servo<C, H, P>, left: &FrameData, right: &FrameData, front: &FrameData) -> Result<(), ServoError> {
+fn set_speed<C: HwChannel, H: HwTimer, P: OutputPin>(motor: &mut Servo<C, H, P>, front: &FrameData, angle: i32) -> Result<(), ServoError> {
     let front_dist = front.dist;
-    let left_dist = left.dist;
-    let right_dist = right.dist;
-    let avg_dist = (front_dist + right_dist + left_dist) / 3;
 
     let set_speed;
 
     if front_dist < REVERSE_DIST {
         set_speed = MIN_REVERSE;
     } else {
-        set_speed = speed_calc(avg_dist);
+        set_speed = speed_calc(front_dist, angle);
     }
+
+    // println!("Speed: {set_speed}");
 
     motor.set_us(set_speed)
 }
 
-fn speed_calc(dist: u16) -> u32 {
-    let mult = 0.2;
-    let mut x = dist as f32 - REVERSE_DIST as f32;
-    if x < 0. {
-        x = 0.;
-    }
-    let speed = (mult * x).round() as u32;
-    u32::min(MAX_FORWARD, MIN_FORWARD + speed)
+fn speed_calc(dist: u16, angle: i32) -> u32 {
+    // Distance where it goes max speed in a straight line
+    const TARGET_DIST: f32 = 150.;
+    let angle_div = (angle as f32 / 10.).abs().max(1.);
+    let front_mult = (dist as f32 / TARGET_DIST).min(1.);
+    const SPEED_MULT: f32 = (MAX_FORWARD - MIN_FORWARD) as f32;
+    let speed = (SPEED_MULT * front_mult / angle_div).round() as u32;
+    speed + MIN_FORWARD
 }
 
 fn fps_test(tfmps: &mut [tfmini_plus::TFMP<impl Uart>]) -> () {
